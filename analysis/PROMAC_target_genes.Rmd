@@ -1,0 +1,166 @@
+---
+title: "PROMAC_target_genes"
+author: "Dennis Amnebrink"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output:
+  html_document:
+      toc: yes
+      toc_float:
+        collapse: no
+      fig_caption: yes
+      code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+```
+
+```{r R_colours, message=FALSE, warning=FALSE}
+GEOM_COL_COLOURS = c(
+  RColorBrewer::brewer.pal(12, name = 'Paired'))
+
+TREAT_COLOURS <- c("blue","green3","red","yellow4")
+```
+
+```{r, variables}
+COUNT_FILTER = 5
+```
+
+```{r file_loading, cache=TRUE, message=FALSE, warning=FALSE}
+#File to connect NGI ID with our own classification ID, add the µ-values to this file for testing later, or do that in a sep file?
+sample_ID <- read_tsv("../data/J.Pinhassi_21_02_sample_info.txt") %>%
+  dplyr::select(1:2) %>%
+  dplyr::rename(sample = 1, sample_name = 2) %>%
+  mutate(sample_name = str_replace(sample_name, "[0-9]*:","")) %>%
+  separate(sample_name, c("treatment","timepoint"), sep = ",") %>%
+  mutate(treatment = gsub("NT","TN", treatment)) %>%
+  mutate(sample_name = paste(timepoint, treatment, sep = "_")) %>%
+  separate(treatment, c("treatment","replicate"), sep = -1) %>%
+  mutate(tre_rep = gsub("_","", sample_name)) %>%
+  mutate(tre_rep = toupper(tre_rep)) %>%
+  mutate(day = case_when( timepoint == "t3" ~ 10,
+                          TRUE ~ 17
+                          )
+         )
+#Reading in annotations
+eggnogs <- read_tsv("../data/eggnog_annotations.tsv.gz")
+
+#Reading in taxonomic annotation of reads
+taxonomy <- read_tsv("../data/eukulele_phylodb.tsv") %>%
+  select(-species) %>%
+  rename(species = "genus", genus = "family", family = "order", order = "class", class = "phylum", phylum = "kingdom")  %>%
+  mutate_all(function(x) ifelse(str_detect(x, '_X'), NA, x)) %>% #Removing _X-annotations
+  mutate_all(function(x) ifelse(str_detect(x, 'environmental'), NA, x)) %>% # Removing environmental - annotations this is considered the same as NA
+  mutate_all(function(x) ifelse(str_detect(x, 'Misc'), NA, x)) %>%
+  mutate_all(function(x) ifelse(str_detect(x, 'unclassified'), NA, x))
+  
+  
+#Count file for all orfs, tpm is calculated per sample
+bbmap <- fread("../data/bbmap_counts.tsv.gz", sep = "\t") %>%
+              filter(count > 0)  %>%                               # removing 0 counts to reduce size of table
+              mutate(Geneid = str_replace(Geneid, "[0-9]*_",""),   # Joining in chr and geneid to match format of eggnog naming.
+                     orf = paste(Chr,Geneid, sep = "_"),
+                     sample = str_extract(sample, "P[0-9]*_[0-9]*")) %>% # Removing extra numbers in sample to match sample_ID format
+              dplyr::select(-Geneid,-Chr) %>%
+              dplyr::select(orf,Start,End,Strand,Length,sample,count,tpm) 
+
+#Overarching stats for all sample files
+overall_stats <- read_tsv("../data/overall_stats.tsv") %>%
+  dplyr::select(-2,-3)                                                   # Removing empty columns
+
+target_genes <- read_tsv("../data/list_of_genes.tsv") 
+```
+
+```{r, message=FALSE, warning=FALSE}
+#Removing non-prokreads as well as recalculating tpm over prok frac.
+bbmap_p <- bbmap %>% 
+  semi_join(taxonomy %>% filter(domain %in% c("Bacteria", "Archaea")), 
+            by = "orf") %>%
+  dplyr::select(-tpm) %>%
+   group_by(sample) %>%
+            mutate(t = count/Length) %>%
+            mutate(tpm = t/sum(t)*1e6) %>%
+   ungroup()
+```
+
+```{r, message=FALSE, warning=FALSE, results=FALSE}
+#Figuring out how many genes are matching, and looking at the ones who do not, and why that is.
+target_gene_names  <- target_genes %>% distinct(gene) %>% pull(gene)
+
+enog_names <- eggnogs %>% distinct(Preferred_name) %>% pull(Preferred_name)
+
+length(target_gene_names)
+
+target_gene_names[match(target_gene_names, enog_names)]
+
+  #Extracting the matching gene names between the two lists
+  matches <- enog_names[!is.na(target_gene_names[match(enog_names, target_gene_names)])]
+  
+  #Looking at the names not matching to see if it is errors in naming, 69 matches so only 27 genes missing
+  target_genes %>%
+    filter(!gene %in% matches) 
+  
+```
+Out of `r length(target_gene_names)` target genes, a total of `r length(matches)` genes were found in the dataset. 
+```{r, message=FALSE, warning=FALSE}
+bbmap_p %>%
+  inner_join(eggnogs, by = "orf") %>%
+  inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
+  inner_join(sample_ID, by = "sample") %>%
+  group_by(timepoint, treatment, replicate, sub_category) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  group_by(timepoint,treatment, sub_category) %>%
+  summarise(tpm = mean(tpm), stdev = sd(tpm)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = sub_category, y = tpm, group = timepoint, fill = timepoint)) +
+  geom_col(position = "dodge") +
+  geom_errorbar(aes(ymin=tpm - stdev, ymax=tpm + stdev)) + #Why no errorbars??
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  facet_wrap(~ treatment) +
+  ggtitle("gene categories")
+```
+```{r, count_filtering}
+filtering_df <- bbmap_p %>%
+  inner_join(eggnogs, by = "orf") %>%
+  semi_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
+  inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
+  inner_join(sample_ID, by = "sample") %>%
+  group_by(Preferred_name, sample) %>%
+  summarise(sum_count = sum(count)) %>%
+  ungroup() %>%
+  inner_join(sample_ID, by = "sample") %>%
+  group_by(timepoint, treatment, Preferred_name) %>%
+  summarise(mean_count = mean(sum_count)) %>%
+  ungroup() %>%
+  group_by(Preferred_name) %>%
+  summarise(sum_count = sum(mean_count)) %>%
+  ungroup() %>%
+  filter(sum_count > (length(unique(sample_ID$treatment)) * length(unique(sample_ID$timepoint)) * COUNT_FILTER)) # This is to require a minimum average of 5 counts per sample
+  
+```
+A total of ... genes were excluded due to less than 5 counts on average per sample.FIX THIS!
+```{r, message=FALSE, warning=FALSE}
+# The gene list and genes expressed
+bbmap_p %>%
+  inner_join(eggnogs, by = "orf") %>%
+  inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
+  inner_join(sample_ID, by = "sample") %>%
+  group_by(timepoint, treatment, Preferred_name) %>%
+  summarise(tpm = mean(tpm), stdev =sd(tpm)) %>%
+  ungroup() %>%
+  inner_join(target_genes %>% rename(Preferred_name = "gene")) %>%
+  semi_join(filtering_df, by = "Preferred_name") %>%
+  ggplot(mapping = aes(x = Preferred_name, y = tpm, group = timepoint, fill = timepoint)) +
+  geom_col(position = "dodge") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  facet_wrap(~ treatment) +
+  ggtitle("Target genes")
+```
+
