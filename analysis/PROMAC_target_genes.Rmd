@@ -11,6 +11,7 @@ output:
       code_folding: hide
 ---
 
+The analysis includes the PROMAC mesocosm days 10 and 17. Gene expression for these two timepoints were sequenced and annotated. The list of genes provided by Ashish was then used to search for genes. The genes used can be found at [here](https://github.com/dennisamne/PROMAC_morphology/tree/main/data) at my github page.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -19,6 +20,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r libraries, message=FALSE, warning=FALSE}
 library(tidyverse)
 library(data.table)
+library(kableExtra)
 ```
 
 ```{r R_colours, message=FALSE, warning=FALSE}
@@ -70,14 +72,10 @@ bbmap <- fread("../data/bbmap_counts.tsv.gz", sep = "\t") %>%
               dplyr::select(-Geneid,-Chr) %>%
               dplyr::select(orf,Start,End,Strand,Length,sample,count,tpm) 
 
-#Overarching stats for all sample files
-overall_stats <- read_tsv("../data/overall_stats.tsv") %>%
-  dplyr::select(-2,-3)                                                   # Removing empty columns
-
 target_genes <- read_tsv("../data/list_of_genes.tsv") 
 ```
 
-```{r, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
 #Removing non-prokreads as well as recalculating tpm over prok frac.
 bbmap_p <- bbmap %>% 
   semi_join(taxonomy %>% filter(domain %in% c("Bacteria", "Archaea")), 
@@ -99,16 +97,17 @@ length(target_gene_names)
 
 target_gene_names[match(target_gene_names, enog_names)]
 
-  #Extracting the matching gene names between the two lists
+#Extracting the matching gene names between the two lists
   matches <- enog_names[!is.na(target_gene_names[match(enog_names, target_gene_names)])]
   
-  #Looking at the names not matching to see if it is errors in naming, 69 matches so only 27 genes missing
+#Looking at the names not matching to see if it is errors in naming, 69 matches so only 27 genes missing
   target_genes %>%
     filter(!gene %in% matches) 
   
 ```
-Out of `r length(target_gene_names)` target genes, a total of `r length(matches)` genes were found in the dataset. 
-```{r, message=FALSE, warning=FALSE}
+Out of `r length(target_gene_names)` target genes, a total of `r length(matches)` genes were found in the dataset.
+<br>
+```{r, message=FALSE, warning=FALSE, fig.cap="Target gene expression grouped by larger categories on days 10 and 17."}
 bbmap_p %>%
   inner_join(eggnogs, by = "orf") %>%
   inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
@@ -124,9 +123,11 @@ bbmap_p %>%
   geom_errorbar(aes(ymin=tpm - stdev, ymax=tpm + stdev)) + #Why no errorbars??
   theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
   facet_wrap(~ treatment) +
-  ggtitle("gene categories")
+  xlab("categories") +
+  ggtitle("Gene categories")
 ```
-```{r, count_filtering}
+ 
+```{r, count_filtering, message=FALSE, warning=FALSE}
 filtering_df <- bbmap_p %>%
   inner_join(eggnogs, by = "orf") %>%
   semi_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name") %>%
@@ -144,9 +145,16 @@ filtering_df <- bbmap_p %>%
   ungroup() %>%
   filter(sum_count > (length(unique(sample_ID$treatment)) * length(unique(sample_ID$timepoint)) * COUNT_FILTER)) # This is to require a minimum average of 5 counts per sample
   
+
+filtered_genes <- filtering_df %>% 
+  distinct(Preferred_name) %>% 
+  pull(Preferred_name)
 ```
-A total of ... genes were excluded due to less than 5 counts on average per sample.FIX THIS!
-```{r, message=FALSE, warning=FALSE}
+<br>
+After applying a filter criteria of a minimum of `r COUNT_FILTER` reads per sample on average, only 
+ `r length(filtered_genes)` genes remained.
+<br>
+```{r, message=FALSE, warning=FALSE, fig.width=30, fig.height=14, fig.cap="Target gene expression."}
 # The gene list and genes expressed
 bbmap_p %>%
   inner_join(eggnogs, by = "orf") %>%
@@ -159,8 +167,9 @@ bbmap_p %>%
   semi_join(filtering_df, by = "Preferred_name") %>%
   ggplot(mapping = aes(x = Preferred_name, y = tpm, group = timepoint, fill = timepoint)) +
   geom_col(position = "dodge") +
-  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 25),
+        axis.text.y = element_text(size = 25)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=3)) +
   facet_wrap(~ treatment) +
   ggtitle("Target genes")
 ```
-
