@@ -114,12 +114,12 @@ epsH	Exopolysaccharide_production
 epsJ	Exopolysaccharide_production
 epsL	Exopolysaccharide_production
 epsP	Exopolysaccharide_production
-atpI  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpB  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpE  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpF  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpH  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpA  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpG  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpD  ATP_synthase_gene F1-F0_ATP_synthase_gene
-atpC  ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpI 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpB 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpE 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpF 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpH 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpA 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpG 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpD 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+atpC 	ATP_synthase_gene F1-F0_ATP_synthase_gene
