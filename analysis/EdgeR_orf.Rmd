@@ -1,0 +1,234 @@
+---
+title: "EdgeR_orf"
+author: "Dennis Amnebrink"
+date: '2022-09-22'
+output: html_document
+---
+
+# EdgeR-analysis 
+EdgeR-analysis of contrast TNvsC for day 17. The analysis is carried out on orf-level, allowing for identification of taxa specific responses. As compared to KO which look at the total regulation of a function irrespective of smaller taxa variations.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r constants, message=FALSE, warning=FALSE}
+SIGNIFICANCE = 0.05
+DIFF_TRESHOLD = 2.5
+```
+
+```{r R_colours}
+GEOM_COL_COLOURS = c(
+  RColorBrewer::brewer.pal(12, name = 'Paired'))
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(data.table)
+library(edgeR)
+library(kableExtra)
+library(viridis)
+```
+
+```{r file-loading, message=FALSE, warning=FALSE, cache=TRUE}
+#File to connect NGI ID with our own classification ID, add the µ-values to this file for testing later, or do that in a sep file?
+sample_ID <- read_tsv("../data/J.Pinhassi_21_02_sample_info.txt") %>%
+  dplyr::select(1:2) %>%
+  dplyr::rename(sample = 1, sample_name = 2) %>%
+  mutate(sample_name = str_replace(sample_name, "[0-9]*:","")) %>%
+  separate(sample_name, c("treatment","timepoint"), sep = ",") %>%
+  mutate(treatment = gsub("NT","TN", treatment)) %>%
+  mutate(sample_name = paste(timepoint, treatment, sep = "_")) %>%
+  separate(treatment, c("treatment","replicate"), sep = -1) %>%
+  mutate(tre_rep = gsub("_","", sample_name)) %>%
+  mutate(tre_rep = toupper(tre_rep)) %>%
+  mutate(day = case_when( timepoint == "t3" ~ 10,
+                          TRUE ~ 17
+                          )
+         )
+
+#Reading in annotations
+eggnogs <- read_tsv("../data/eggnog_annotations.tsv.gz")
+
+#Reading in taxonomic annotation of reads
+taxonomy <- read_tsv("../data/eukulele_phylodb.tsv") %>%
+  select(-species) %>%
+  rename(species = "genus", genus = "family", family = "order", order = "class", class = "phylum", phylum = "kingdom")
+  
+#Count file for all orfs, tpm is calculated per sample
+bbmap <- fread("../data/bbmap_counts.tsv.gz", sep = "\t") %>%
+              filter(count > 0)  %>%                               # removing 0 counts to reduce size of table
+              mutate(Geneid = str_replace(Geneid, "[0-9]*_",""),   # Joining in chr and geneid to match format of eggnog naming.
+                     orf = paste(Chr,Geneid, sep = "_"),
+                     sample = str_extract(sample, "P[0-9]*_[0-9]*")) %>% # Removing extra numbers in sample to match sample_ID format
+              dplyr::select(-Geneid,-Chr) %>%
+              dplyr::select(orf,Start,End,Strand,Length,sample,count,tpm)
+
+rm_values <- read_tsv("../data/Rm_values.tsv")
+
+target_genes <- read_tsv("../data/list_of_genes.tsv") 
+```
+
+```{r prok-filter, message=FALSE, warning=FALSE, cache=TRUE}
+#Removing non-prokreads as well as recalculating tpm over prok frac.
+bbmap_p <- bbmap %>% 
+  semi_join(taxonomy %>% filter(domain %in% c("Bacteria", "Archaea")), 
+            by = "orf") %>%
+  dplyr::select(-tpm) %>%
+   group_by(sample) %>%
+            mutate(t = count/Length) %>%
+            mutate(tpm = t/sum(t)*1e6) %>%
+   ungroup()
+```
+
+```{r, edgeR_day17, message=FALSE, warning=FALSE, results="hide"}
+ bbmap_mat <- bbmap_p %>% 
+  dplyr::select(-t, -tpm) %>%
+  group_by(sample, orf) %>%
+  summarise(count = sum(count)) %>%
+  ungroup() %>%
+  inner_join(sample_ID, by = "sample") %>%
+  filter(day == "17") %>% #Keeping day 17
+  select(sample, orf, count) %>%
+  spread(sample, count, fill = 0) %>%
+  column_to_rownames("orf") %>%
+  as.matrix()
+
+y <- DGEList(bbmap_mat)
+
+#Changing the grouping to the known treatments from mesocosm.
+y$samples$group = sample_ID %>% filter(day == "17") %>% select(sample, treatment) %>%  pull(treatment)
+
+#It has been correctly done as they match with the original sample file
+groupF <- y$samples$group
+
+#Another way of verifying
+match(rownames(y$samples), colnames(bbmap_mat))
+
+y <- DGEList(counts=bbmap_mat, group=groupF)
+
+keep <- filterByExpr(y, group=groupF)
+
+y <- y[keep, , keep.lib.sizes=FALSE]
+
+y <- calcNormFactors(y)
+
+y$samples
+
+#The design-matrix doesn't like non-numeric categories, so here is a numeric corresponding to orignal levels, key =
+# 1 = T, 2 = C, 3 = N, 4 = TN
+design_m <- y$samples %>% select(group) %>%
+  mutate(group = c(1,1,1,2,2,2,3,3,3,4,4,4))
+
+y <- estimateDisp(y, design = design_m)
+
+#plotBCV(y)
+
+#Creating a designmatrix (this looks like the correct structure), C is the base treatment, exlcuding intercept column.
+trial_mat <- model.matrix(~0+groupF)
+
+fit <- glmQLFit(y, trial_mat)
+
+#Comparing C vs T
+colnames(trial_mat) = c("C","N","TN","t")
+
+fit <- glmQLFit(y, trial_mat)
+
+TNvsC <- makeContrasts(TN - C, levels=trial_mat)
+```
+
+```{r, joining_contrasting_days, message=FALSE, warning=FALSE, results="hide"}
+qlf <- glmQLFTest(fit, contrast=TNvsC)
+
+day17 <- topTags(qlf, n = NULL) %>%
+  as.data.frame() %>%
+  mutate(day = "17") %>%
+  rownames_to_column("orf") %>%
+  select(-FDR)
+
+edgeR_orfs <- day17 %>%
+  mutate(fdr = p.adjust(PValue, method = "fdr")) %>%
+  mutate(type = 
+           case_when(
+             (fdr <= SIGNIFICANCE & logFC >= DIFF_TRESHOLD) ~ "Up",
+             (fdr <= SIGNIFICANCE & logFC <= -DIFF_TRESHOLD) ~ "Down",
+             TRUE ~"non-DE"
+           )) %>%
+  mutate(type = forcats::as_factor(type) %>% fct_relevel("Up","non-DE","Down"))
+```
+Out of a total of `r length(edgeR_orfs$orf)` orfs, `r length(edgeR_orfs %>% filter(type == "Up") %>% pull(orf))` are upregulated in the TN-treatment. While `r length(edgeR_orfs %>% filter(type == "Down") %>% pull(orf))` are upregulated in the C treatment.
+```{r}
+kable(edgeR_orfs %>%
+  group_by(type) %>%
+  tally() %>%
+  ungroup() %>%
+  rename("No. of genes" = "n")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r edgeR_plot, message=F, warning=FALSE, fig.cap='Gene abundance against logFC, Up denotes upregulated in the TN treatment, down indicates upregulated in the C-treatment. Horizontal dashed green lines indicates DIFF_TRESHOLD logFC treshold.'}
+#Setting colours
+colours <- c("#ff0000","#000000","#4248f5")
+
+edgeR_orfs %>%
+  ggplot(mapping = aes(x = logFC, y = logCPM)) +
+  geom_point(aes(colour = type, size = type)) +
+  scale_color_manual("Type",values = colours) +
+  scale_size_manual(values = c("Up" = 1.5, "non-DE" = 0.2, "Down" = 1.5), guide = "none") +
+  geom_vline(xintercept = DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
+  geom_vline(xintercept = -DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
+  theme_classic() +
+  coord_flip() +
+  facet_wrap(~ day)
+```
+
+```{r}
+# Summarising the taxonomy of the orfs
+edgeR_orfs %>%
+  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf")
+```
+```{r}
+#Investigating if orfs are in the list of target genes.
+target_genes_present <- edgeR_orfs %>% #83604 rows 
+  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf") %>% #Loosing unannotated orfs here #81 698 rows
+  inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name")  # 1831 rows 
+  
+list_overview <- target_genes_present %>%
+  group_by(type) %>%
+  tally() %>%
+  ungroup()
+```
+Among the orfs annotated in the target gene list,  `r list_overview %>% filter(type == "Up") %>% pull(n)` were upregulated,   `r list_overview %>% filter(type == "Down") %>% pull(n)` were downregulated and lastly `r list_overview %>% filter(type == "non-DE") %>% pull(n)` were not differentially expressed.
+
+```{r}
+kable(target_genes_present %>%
+  filter(type == "Up") %>%
+  select(-Category) %>%
+    inner_join(taxonomy, by = "orf") %>%
+    arrange(desc(logFC))
+  ) %>%
+   kable_styling(bootstrap_options = c("striped", "hover")) %>%
+    add_header_above(c("Upregulated  orfs in TN-treatment" = 22), font_size = 18) %>%
+  scroll_box(width = "100%", height = "500px")
+```
+These taxonomy of genes match the increase in taxonomy on the order level seen in the TN-treatment as opposed to the C-treatment (Burkholderiales and Flavobacteriales).
+
+```{r}
+kable(target_genes_present %>%
+  filter(type == "Down") %>%
+  select(-Category) %>%
+    inner_join(taxonomy, by = "orf") %>%
+    arrange(desc(logFC))
+  ) %>%
+   kable_styling(bootstrap_options = c("striped", "hover")) %>%
+    add_header_above(c("Upregulated  orfs in TN-treatment" = 22), font_size = 18) %>%
+  scroll_box(width = "100%", height = "500px")
+```
+Among the Down-regulated genes, oxidative stress and a type 1 restriction modification as well as an osmoregulatory gene (katG) were found to be downregulated in the TN-treatment, ATP-SYNTHASES from alpha-and gamma-proteobacteria were also found to be upregulated.
+
+```{r}
+#Looking at functions of the orfs and also doing this by taxonomy later
+edgeR_orfs %>%
+  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf")
+
+```
+
