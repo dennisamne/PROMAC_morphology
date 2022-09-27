@@ -7,6 +7,9 @@ output: html_document
 
 # EdgeR-analysis 
 EdgeR-analysis of contrast TNvsC for day 17. The analysis is carried out on orf-level, allowing for identification of taxa specific responses. As compared to KO which look at the total regulation of a function irrespective of smaller taxa variations.
+
+# Identify genes related to blebbing, look at orfs annotated as GO:0032060 in the up/downregulated genes.
+# Genes related to OMV's on the other hand GO:0061701 exist.
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -79,7 +82,7 @@ bbmap_p <- bbmap %>%
             mutate(tpm = t/sum(t)*1e6) %>%
    ungroup()
 ```
-
+# EdgeR- analysis
 ```{r, edgeR_day17, message=FALSE, warning=FALSE, results="hide"}
  bbmap_mat <- bbmap_p %>% 
   dplyr::select(-t, -tpm) %>%
@@ -154,9 +157,14 @@ edgeR_orfs <- day17 %>%
              TRUE ~"non-DE"
            )) %>%
   mutate(type = forcats::as_factor(type) %>% fct_relevel("Up","non-DE","Down"))
+
+write_tsv(edgeR_orfs, "../results/edgeR_orfs.tsv")
 ```
 Out of a total of `r length(edgeR_orfs$orf)` orfs, `r length(edgeR_orfs %>% filter(type == "Up") %>% pull(orf))` are upregulated in the TN-treatment. While `r length(edgeR_orfs %>% filter(type == "Down") %>% pull(orf))` are upregulated in the C treatment.
 ```{r}
+
+edgeR_orfs <- read_tsv("../results/edgeR_orfs.tsv")
+
 kable(edgeR_orfs %>%
   group_by(type) %>%
   tally() %>%
@@ -180,12 +188,7 @@ edgeR_orfs %>%
   coord_flip() +
   facet_wrap(~ day)
 ```
-
-```{r}
-# Summarising the taxonomy of the orfs
-edgeR_orfs %>%
-  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf")
-```
+## Target genes in the DE-genes
 ```{r}
 #Investigating if orfs are in the list of target genes.
 target_genes_present <- edgeR_orfs %>% #83604 rows 
@@ -224,11 +227,89 @@ kable(target_genes_present %>%
   scroll_box(width = "100%", height = "500px")
 ```
 Among the Down-regulated genes, oxidative stress and a type 1 restriction modification as well as an osmoregulatory gene (katG) were found to be downregulated in the TN-treatment, ATP-SYNTHASES from alpha-and gamma-proteobacteria were also found to be upregulated.
+```{r}
 
+
+# Identify genes related to blebbing, look at orfs annotated as GO:0032060 in the up/downregulated genes.
+# Genes related to OMV's on the other hand GO:0061701 exist.
+edgeR_orfs %>%
+  #filter(type %in% c("Up","Down")) %>%
+  inner_join(
+    eggnogs %>% distinct(orf, GOs),
+    by = "orf"
+  ) %>%
+  filter(GOs %in% c("GO:0032060","GO:0061701"))
+```
+There are no GO-terms related for blebbing or OMV's in the up/downregulated genes (GO-terms GO:0032060,GO:0061701).
+
+## General orf-response
 ```{r}
 #Looking at functions of the orfs and also doing this by taxonomy later
 edgeR_orfs %>%
-  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf")
+  filter(type %in% c("Up","Down")) %>%
+  inner_join(taxonomy, by = "orf") %>%
+  group_by(class, type) %>%
+  summarise(SumlogCPM = sum(logCPM)) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = class, y = SumlogCPM)) +
+  geom_col() +
+  facet_wrap(~ type) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  ggtitle("summarised logCPM of class for up and down regulated genes")
+```
 
+### Upregulated genes
+Out of the upregulated genes, only `r edgeR_orfs %>% filter(type == "Up") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated.
+
+```{r}
+kable(
+  edgeR_orfs %>%
+  filter(type == "Up") %>%
+  inner_join(
+    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
+    by = "orf") %>%
+  filter(Preferred_name != "-") %>% #In total 418 are annotated
+  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
+    inner_join(taxonomy, by = "orf")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
+  scroll_box(width = "100%", height = "500px")
+```
+### Downregulated genes
+Out of the downregulated genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated.
+```{r}
+kable(
+  edgeR_orfs %>%
+  filter(type == "Down") %>%
+  inner_join(
+    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
+    by = "orf") %>%
+  filter(Preferred_name != "-") %>% #In total 418 are annotated
+  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
+    inner_join(taxonomy, by = "orf")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
+  scroll_box(width = "100%", height = "500px")
+```
+### Archaea of my interest
+Out of the `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(taxonomy, by = "orf") %>% filter(domain == "Archaea") %>% nrow()` archaeal genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(taxonomy, by = "orf") %>% filter(domain == "Archaea") %>% inner_join(eggnogs %>% distinct(orf, Preferred_name, best_og_desc),by = "orf") %>% filter(Preferred_name != "-")` were annotated. Potentially we are missing important genes here.
+```{r}
+kable(
+  edgeR_orfs %>%
+  filter(type == "Down") %>%
+  inner_join(
+    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
+    by = "orf") %>%
+  filter(Preferred_name != "-") %>% #In total 418 are annotated
+  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
+    inner_join(taxonomy, by = "orf") %>%
+    filter(domain == "Archaea")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
+  scroll_box(width = "100%", height = "500px")
 ```
 
