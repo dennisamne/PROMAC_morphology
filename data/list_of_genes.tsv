@@ -123,3 +123,9 @@ atpA 	ATP_synthase_gene F1-F0_ATP_synthase_gene
 atpG 	ATP_synthase_gene F1-F0_ATP_synthase_gene
 atpD 	ATP_synthase_gene F1-F0_ATP_synthase_gene
 atpC 	ATP_synthase_gene F1-F0_ATP_synthase_gene
+mreB	cell_shape
+ccmA	cell_shape
+crvA	cell_shape
+csd1	cell_shape
+csd2	cell_shape
+rodA	cell_shape
