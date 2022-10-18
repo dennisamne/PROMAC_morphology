@@ -89,65 +89,47 @@ bbmap_p <- bbmap %>%
 ```
 # EdgeR- analysis
 ```{r, edgeR_day17, message=FALSE, warning=FALSE, results="hide", cache=TRUE}
- bbmap_mat <- bbmap_p %>% 
+design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
+colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
+
+#Creating DGElist
+dgelist <- bbmap_p %>% 
   dplyr::select(-t, -tpm) %>%
   group_by(sample, orf) %>%
   summarise(count = sum(count)) %>%
   ungroup() %>%
+  group_by(orf) %>%
+  filter(sum(count) >= 5, n() >= 2) %>% # Removing low abundant orfs
+  ungroup() %>%
   inner_join(sample_ID, by = "sample") %>%
   filter(day == "17") %>% #Keeping day 17
   select(sample, orf, count) %>%
-  spread(sample, count, fill = 0) %>%
+  pivot_wider(names_from = sample, values_from = count, values_fill = 0) %>%
   column_to_rownames("orf") %>%
-  as.matrix()
+  DGEList() 
 
-y <- DGEList(bbmap_mat)
+#Removing low count genes
+ keep <- dgelist %>% 
+   filterByExpr()
+ 
+ summary(keep)
+ 
+dgelist <- dgelist[keep, , keep.lib.sizes=FALSE]
+ 
+ 
+dgelist <- dgelist %>%
+  calcNormFactors() %>%
+  estimateDisp(design) %>%
+  glmQLFit(design, robust = TRUE)
 
-#Changing the grouping to the known treatments from mesocosm.
-y$samples$group = sample_ID %>% filter(day == "17") %>% select(sample, treatment) %>%  pull(treatment)
+#Creating contrasts
+my.contrasts <- makeContrasts(warm_nutrientvscold_control=warm_nutrient-cold_control, levels=design)
 
-#It has been correctly done as they match with the original sample file
-groupF <- y$samples$group
-
-#Another way of verifying
-match(rownames(y$samples), colnames(bbmap_mat))
-
-y <- DGEList(counts=bbmap_mat, group=groupF)
-
-keep <- filterByExpr(y, group=groupF)
-
-y <- y[keep, , keep.lib.sizes=FALSE]
-
-y <- calcNormFactors(y)
-
-y$samples
-
-#The design-matrix doesn't like non-numeric categories, so here is a numeric corresponding to orignal levels, key =
-# 1 = T, 2 = C, 3 = N, 4 = TN
-design_m <- y$samples %>% select(group) %>%
-  mutate(group = c(1,1,1,2,2,2,3,3,3,4,4,4))
-
-y <- estimateDisp(y, design = design_m)
-
-#plotBCV(y)
-
-#Creating a designmatrix (this looks like the correct structure), C is the base treatment, exlcuding intercept column.
-trial_mat <- model.matrix(~0+groupF)
-
-fit <- glmQLFit(y, trial_mat)
-
-#Comparing C vs T
-colnames(trial_mat) = c("C","N","TN","t")
-
-fit <- glmQLFit(y, trial_mat)
-
-TNvsC <- makeContrasts(TN - C, levels=trial_mat)
+qlf.TNvsC <- glmQLFTest(dgelist, contrast=my.contrasts[,"warm_nutrientvscold_control"])
 ```
 
 ```{r, joining_contrasting_days, message=FALSE, warning=FALSE, results="hide", cache=TRUE}
-qlf <- glmQLFTest(fit, contrast=TNvsC)
-
-day17 <- topTags(qlf, n = NULL) %>%
+day17 <- topTags(qlf.TNvsC, n = Inf) %>%
   as.data.frame() %>%
   mutate(day = "17") %>%
   rownames_to_column("orf") %>%
@@ -196,7 +178,7 @@ edgeR_orfs %>%
 ```
 
 ## Target genes in the DE-genes
-Here the general differential expression is presented, then focused on the presence of target genes among the up and down-regulated genes. It is a general response of ATPases seen in the class of Betaproteobacteria.The cell shape gene [ccmA](https://pubmed.ncbi.nlm.nih.gov/20510929/) is also shown to be upregulated in Deltaproteobacteria. The tables below show all the target genesthar are differentially expressed in the TN and C treatment respectively.
+Here the general differential expression is presented, then focused on the presence of target genes among the up and down-regulated genes. It is a general response of ATPases seen in the class of Betaproteobacteria.The cell shape gene [ccmA](https://pubmed.ncbi.nlm.nih.gov/20510929/) is also shown to be upregulated in Deltaproteobacteria. The tables below show all the target genes that are differentially expressed in the TN and C treatment respectively.
 ```{r, message=F, warning=FALSE}
 #Investigating if orfs are in the list of target genes.
 target_genes_present <- edgeR_orfs %>% #83604 rows 
@@ -246,6 +228,7 @@ edgeR_orfs %>%
   ) %>%
   filter(GOs %in% c("GO:0032060","GO:0061701","GO:0046677"))
 ```
+
 ## General orf-response
 ```{r, message=F, warning=FALSE, fig.width=8}
 #Looking at functions of the orfs and also doing this by taxonomy later
@@ -275,12 +258,12 @@ amtB ammonium transporter
 [fliC](https://www.uniprot.org/uniprotkb/P04949/entry) flagellin gene, motility.However, in some bacteria flagellin is not necessarily used for mtility, but [may be needed for autoaggreagation](https://www.frontiersin.org/articles/10.3389/fmicb.2017.00301/full), which perhaps can explain the expression of this gene and the aggregations and connections seen in the Electron microscopy...  
 [fliD](https://www.uniprot.org/uniprotkb/P24216/entry) motility.
  virD4 considered a [T4SS](https://en.wikipedia.org/wiki/Type_IV_secretion_system) protein, matches the cell interaction potentially. 
- While not included in the target gene list ftsZ is upregulated in the TN-treatment.   
+While not included in the target gene list ftsZ is upregulated in the TN-treatment.   
 impA [T6SS](https://en.wikipedia.org/wiki/Type_VI_secretion_system)
 [obg](https://www.uniprot.org/uniprotkb/P20964/entry) Involved in  sporulation, is it possible that sporulation can produce different morphologies??
 
 I further checked the presence of antibiotics production ,as this has been shown to cause aggregation in aquatic communities [Ref](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4077313/), but a quick look yielded nothing. On the other hand one or two resistance genes were found in both treatments...
-The table is ordered by logFC.
+The table is ordered by logFC.        
 ```{r, message=F, warning=FALSE}
 kable(
   edgeR_orfs %>%
@@ -298,7 +281,7 @@ kable(
   scroll_box(width = "100%", height = "500px")
 ```
 ### Downregulated genes
-Out of the `r edgeR_orfs %>% filter(type == "Down") %>% nrow()`downregulated genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated. The taxonomic partitioning of Differentially expressed genes in the C-treatment was more diverse (see table below), with taxa including `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf, Preferred_name, best_og_desc), by = "orf") %>% filter(Preferred_name != "-") %>% mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>% inner_join(taxonomy, by = "orf") %>% distinct(class) %>% pull(class) ` There are in this list many genes related to the ribosome.   
+Out of the `r edgeR_orfs %>% filter(type == "Down") %>% nrow()`downregulated genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated. The taxonomic partitioning of Differentially expressed genes in the C-treatment was more diverse (see table below), with taxa including `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf, Preferred_name, best_og_desc), by = "orf") %>% filter(Preferred_name != "-") %>% mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>% inner_join(taxonomy, by = "orf") %>% distinct(class) %>% pull(class)` There are in this list many genes related to the ribosome.   
 The fliC gene is also upregulated in this treatment, but fewer. For full list see the table below. Genes are once again ordered by logFC.   
 The [srmB](https://www.uniprot.org/uniprotkb/P21507/entry) gene is required for ribosome assembly at low temperatures.
 ```{r, message=F, warning=FALSE}
