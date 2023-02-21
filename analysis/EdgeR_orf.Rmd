@@ -1,25 +1,25 @@
 ---
-title: "EdgeR_orf"
+title: "edgerPref"
 author: "Dennis Amnebrink"
-date: "`r format(Sys.time(), '%Y-%m-%d')`"
-output:
-  html_document:
-      toc: yes
-      toc_float:
-        collapse: no
-      fig_caption: yes
-      code_folding: hide
-      number_sections: true
+affiliation-title: "Linnaeus University"
+title-block-banner: true
+date: now
+editor: visual
+toc: true
+prefer-html: true
+number-sections: true
+format:
+  html:
+     code-fold: true
+     self-contained: true
 ---
 
-# EdgeR-analysis 
-EdgeR-analysis of contrast TNvsC for day 17. The analysis is carried out on orf-level, allowing for identification of taxa specific responses. As compared to KO which look at the total regulation of a function irrespective of smaller taxa variations.
+# EdgeR-analysis
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
+EdgeR-analysis of contrast TNvsC for day 17. The analysis is carried out on orf-level, allowing for identification of taxa specific responses.
 
-```{r constants, message=FALSE, warning=FALSE}
+```{r}
+#| warning: false
 SIGNIFICANCE = 0.05
 DIFF_TRESHOLD = 2.5
 MIN_COUNT = 15
@@ -31,15 +31,20 @@ GEOM_COL_COLOURS = c(
   RColorBrewer::brewer.pal(12, name = 'Paired'))
 ```
 
-```{r, message=FALSE, warning=FALSE}
+```{r}
+#| warning: false
 library(tidyverse)
 library(data.table)
 library(edgeR)
 library(kableExtra)
+library(pals)
 library(viridis)
+library(patchwork)
 ```
 
-```{r file-loading, message=FALSE, warning=FALSE, cache=TRUE}
+```{r}
+#| warning: false
+#| cache: true
 #File to connect NGI ID with our own classification ID, add the µ-values to this file for testing later, or do that in a sep file?
 sample_ID <- read_tsv("../data/J.Pinhassi_21_02_sample_info.txt") %>%
   dplyr::select(1:2) %>%
@@ -56,8 +61,19 @@ sample_ID <- read_tsv("../data/J.Pinhassi_21_02_sample_info.txt") %>%
                           )
          )
 
+#COG to gene-name file
+cognames <- read_tsv("../data/cognames.tsv", col_names = c("eggNOG OGs","cogname"))
+#Target gene file
+target_genes <- read_tsv("../data/list_of_genes.tsv")
+
 #Reading in annotations
-eggnogs <- read_tsv("../data/eggnog_annotations.tsv.gz")
+eggnogs <- read_tsv("../data/eggnog_annotations.tsv.gz") %>% # Overwriting the Preferred_names with COGs of interest, for a priori list...
+  mutate(`eggNOG OGs` = gsub("@...*","",`eggNOG OGs`)) %>%
+  mutate(Preferred_name = case_when(
+      `eggNOG OGs` %in% target_genes$gene[grepl("COG", target_genes$gene)] ~ `eggNOG OGs`,
+      TRUE ~ Preferred_name
+  ))
+
 
 #Reading in taxonomic annotation of reads
 taxonomy <- read_tsv("../data/eukulele_phylodb.tsv") %>%
@@ -75,10 +91,13 @@ bbmap <- fread("../data/bbmap_counts.tsv.gz", sep = "\t") %>%
 
 rm_values <- read_tsv("../data/Rm_values.tsv")
 
-target_genes <- read_tsv("../data/list_of_genes.tsv")
+
+gene_categories <- read_tsv("../data/gene_categories.tsv")
 ```
 
-```{r prok-filter, message=FALSE, warning=FALSE, cache=TRUE}
+```{r}
+#| warning: false
+#| cache: true
 #Removing non-prokreads as well as recalculating tpm over prok frac.
 bbmap_p <- bbmap %>% 
   semi_join(taxonomy %>% filter(domain %in% c("Bacteria", "Archaea")), 
@@ -89,239 +108,9 @@ bbmap_p <- bbmap %>%
             mutate(tpm = t/sum(t)*1e6) %>%
    ungroup()
 ```
-# EdgeR- analysis
-```{r, edgeR_day17, message=FALSE, warning=FALSE, results="hide", cache=TRUE}
-design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
-colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
 
-#Creating DGElist
-dgelist <- bbmap_p %>% 
-  dplyr::select(-t, -tpm) %>%
-  group_by(sample, orf) %>%
-  summarise(count = sum(count)) %>%
-  ungroup() %>%
-  group_by(orf) %>%
-  filter(sum(count) >= 5, n() >= 2) %>% # Removing low abundant orfs
-  ungroup() %>%
-  inner_join(sample_ID, by = "sample") %>%
-  filter(day == "17") %>% #Keeping day 17
-  select(sample, orf, count) %>%
-  pivot_wider(names_from = sample, values_from = count, values_fill = 0) %>%
-  column_to_rownames("orf") %>%
-  DGEList() %>%
-  calcNormFactors() %>%
-  estimateDisp(design) %>%
-  glmQLFit(design, robust = TRUE)
-
-#Creating contrasts
-my.contrasts <- makeContrasts(warm_nutrientvscold_control=warm_nutrient-cold_control, levels=design)
-
-qlf.TNvsC <- glmQLFTest(dgelist, contrast=my.contrasts[,"warm_nutrientvscold_control"])
-```
-
-```{r, joining_contrasting_days, message=FALSE, warning=FALSE, results="hide", cache=TRUE}
-day17 <- topTags(qlf.TNvsC, n = Inf) %>%
-  as.data.frame() %>%
-  mutate(day = "17") %>%
-  rownames_to_column("orf") %>%
-  select(-FDR)
-
-edgeR_orfs <- day17 %>%
-  mutate(fdr = p.adjust(PValue, method = "fdr")) %>%
-  mutate(type = 
-           case_when(
-             (fdr <= SIGNIFICANCE & logFC >= DIFF_TRESHOLD) ~ "Up",
-             (fdr <= SIGNIFICANCE & logFC <= -DIFF_TRESHOLD) ~ "Down",
-             TRUE ~"non-DE"
-           )) %>%
-  mutate(type = forcats::as_factor(type) %>% fct_relevel("Up","non-DE","Down"))
-
-write_tsv(edgeR_orfs, "../results/edgeR_orfs.tsv")
-```
-
-After EdgeR-analysis the resulting genes produced the following output also expressed as the table below.   
-Out of a total of `r length(edgeR_orfs$orf)` orfs, `r length(edgeR_orfs %>% filter(type == "Up") %>% pull(orf))` are upregulated in the TN-treatment. While `r length(edgeR_orfs %>% filter(type == "Down") %>% pull(orf))` are upregulated in the C treatment.
-```{r,  message=F, warning=FALSE}
-edgeR_orfs <- read_tsv("../results/edgeR_orfs.tsv")
-
-kable(edgeR_orfs %>%
-  group_by(type) %>%
-  tally() %>%
-  ungroup() %>%
-  rename("No. of genes" = "n")) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
-```
-
-```{r edgeR_plot, message=F, warning=FALSE, fig.cap='Gene abundance against logFC, Up denotes upregulated in the TN treatment, down indicates upregulated in the C-treatment. Horizontal dashed green lines indicates DIFF_TRESHOLD logFC treshold.'}
-#Setting colours
-colours <- c("#ff0000","#000000","#4248f5")
-
-edgeR_orfs %>%
-  ggplot(mapping = aes(x = logFC, y = logCPM)) +
-  geom_point(aes(colour = type, size = type)) +
-  scale_color_manual("Type",values = colours) +
-  scale_size_manual(values = c("Up" = 1.5, "non-DE" = 0.2, "Down" = 1.5), guide = "none") +
-  geom_vline(xintercept = DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
-  geom_vline(xintercept = -DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
-  theme_classic() +
-  coord_flip() +
-  facet_wrap(~ day)
-```
-
-## Target genes in the DE-genes
-Here the general differential expression is presented, then focused on the presence of target genes among the up and down-regulated genes. It is a general response of ATPases seen in the class of Betaproteobacteria.The cell shape gene [ccmA](https://pubmed.ncbi.nlm.nih.gov/20510929/) is also shown to be upregulated in Deltaproteobacteria. The tables below show all the target genes that are differentially expressed in the TN and C treatment respectively.
-```{r, message=F, warning=FALSE}
-#Investigating if orfs are in the list of target genes.
-target_genes_present <- edgeR_orfs %>% #83604 rows 
-  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf") %>% #Loosing unannotated orfs here #81 698 rows
-  inner_join(target_genes %>% rename(Preferred_name = "gene"), by = "Preferred_name")  # 1831 rows 
-  
-list_overview <- target_genes_present %>%
-  group_by(type) %>%
-  tally() %>%
-  ungroup()
-```
-Among the orfs annotated in the target gene list,  `r list_overview %>% filter(type == "Up") %>% pull(n)` were upregulated,   `r list_overview %>% filter(type == "Down") %>% pull(n)` were downregulated and lastly `r list_overview %>% filter(type == "non-DE") %>% pull(n)` were not differentially expressed.
-
-```{r, message=F, warning=FALSE}
-kable(target_genes_present %>%
-  filter(type == "Up") %>%
-  select(-Category) %>%
-    inner_join(taxonomy, by = "orf") %>%
-    arrange(desc(logFC))
-  ) %>%
-   kable_styling(bootstrap_options = c("striped", "hover")) %>%
-    add_header_above(c("Upregulated genelist orfs in TN-treatment" = 22), font_size = 18) %>%
-  scroll_box(width = "100%", height = "500px")
-```
-The taxonomy of genes match the increase in taxonomy on the order level seen in the TN-treatment as opposed to the C-treatment (Burkholderiales and somewhat Flavobacteriales).
-
-```{r, message=F, warning=FALSE}
-kable(target_genes_present %>%
-  filter(type == "Down") %>%
-  select(-Category) %>%
-    inner_join(taxonomy, by = "orf") %>%
-    arrange(desc(logFC))
-  ) %>%
-   kable_styling(bootstrap_options = c("striped", "hover")) %>%
-    add_header_above(c("Upregulated genelist orfs in C-treatment" = 22), font_size = 18) %>%
-  scroll_box(width = "100%", height = "500px")
-```
-Among the Down-regulated genes, oxidative stress and a type 1 restriction modification as well as an osmoregulatory gene (katG) were found to be downregulated in the TN-treatment, ATP-SYNTHASES from alpha-and gamma-proteobacteria were also found to be upregulated.Furtherrmore, there are no GO-terms related for blebbing or OMV's in the up/downregulated genes (GO-terms GO:0032060,GO:0061701). The same was true for antibiotic response term GO:0046677.
-```{r, message=F, warning=FALSE}
-# Identify genes related to blebbing, look at orfs annotated as GO:0032060 in the up/downregulated genes.
-# Genes related to OMV's on the other hand GO:0061701 exist.. Nor was anything related to antibiotic responses found through the GO-term GO:0046677
-edgeR_orfs %>%
-  #filter(type %in% c("Up","Down")) %>%
-  inner_join(
-    eggnogs %>% distinct(orf, GOs),
-    by = "orf"
-  ) %>%
-  filter(GOs %in% c("GO:0032060","GO:0061701","GO:0046677"))
-```
-
-## General orf-response
-```{r, message=F, warning=FALSE, fig.width=8}
-#Looking at functions of the orfs and also doing this by taxonomy later
-edgeR_orfs %>%
-  filter(type %in% c("Up","Down")) %>%
-  inner_join(taxonomy, by = "orf") %>%
-  group_by(class, type) %>%
-  summarise(SumlogCPM = sum(logCPM)) %>%
-  ungroup() %>%
-  ggplot(mapping = aes(x = class, y = SumlogCPM)) +
-  geom_col() +
-  facet_wrap(~ type) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
-  ggtitle("summarised logCPM of class for up and down regulated genes")
-```
-
-### Upregulated genes
-Out of the upregulated genes, only `r edgeR_orfs %>% filter(type == "Up") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated.
-Here follows some example genes of interest, for personal perusing, consort the table below. These genes include impA (a type VI secretion protein)    
-pstS (many pstS genes mainly in alpha proteobacteria, one or two betas also have this gene upregulated),phoB, part of a phosphate high affinity system and starvation protein complex respectively.   
-phnCD phosphonate uptake system   
-amtB ammonium transporter   
-[pufB](https://www.uniprot.org/uniprotkb/P0C0Y1/entry) a light harvesting protein.      
-[flgE](https://www.uniprot.org/uniprotkb/P75937/entry) a flagellar hook protein (several copies).
-[flgC](https://www.uniprot.org/uniprotkb/P0ABX2/entry) motility.  
-[fliC](https://www.uniprot.org/uniprotkb/P04949/entry) flagellin gene, motility.However, in some bacteria flagellin is not necessarily used for mtility, but [may be needed for autoaggreagation](https://www.frontiersin.org/articles/10.3389/fmicb.2017.00301/full), which perhaps can explain the expression of this gene and the aggregations and connections seen in the Electron microscopy...  
-[fliD](https://www.uniprot.org/uniprotkb/P24216/entry) motility.
- virD4 considered a [T4SS](https://en.wikipedia.org/wiki/Type_IV_secretion_system) protein, matches the cell interaction potentially. 
-While not included in the target gene list ftsZ is upregulated in the TN-treatment.   
-impA [T6SS](https://en.wikipedia.org/wiki/Type_VI_secretion_system)
-[obg](https://www.uniprot.org/uniprotkb/P20964/entry) Involved in  sporulation, is it possible that sporulation can produce different morphologies??
-
-I further checked the presence of antibiotics production ,as this has been shown to cause aggregation in aquatic communities [Ref](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4077313/), but a quick look yielded nothing. On the other hand one or two resistance genes were found in both treatments...
-The table is ordered by logFC.        
-```{r, message=F, warning=FALSE}
-kable(
-  edgeR_orfs %>%
-  filter(type == "Up") %>%
-  inner_join(
-    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
-    by = "orf") %>%
-  filter(Preferred_name != "-") %>% #In total 418 are annotated
-  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
-    inner_join(taxonomy, by = "orf") %>%
-    arrange(desc(logFC))
-  ) %>%
-  kable_styling(bootstrap_options = c("striped", "hover")) %>%
-  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
-  scroll_box(width = "100%", height = "500px")
-```
-### Downregulated genes
-Out of the `r edgeR_orfs %>% filter(type == "Down") %>% nrow()`downregulated genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf,Preferred_name),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` are annotated. The taxonomic partitioning of Differentially expressed genes in the C-treatment was more diverse (see table below), with taxa including `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(eggnogs %>% distinct(orf, Preferred_name, best_og_desc), by = "orf") %>% filter(Preferred_name != "-") %>% mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>% inner_join(taxonomy, by = "orf") %>% distinct(class) %>% pull(class)` There are in this list many genes related to the ribosome.   
-The fliC gene is also upregulated in this treatment, but fewer. For full list see the table below. Genes are once again ordered by logFC.   
-The [srmB](https://www.uniprot.org/uniprotkb/P21507/entry) gene is required for ribosome assembly at low temperatures.
-```{r, message=F, warning=FALSE}
-kable(
-  edgeR_orfs %>%
-  filter(type == "Down") %>%
-  inner_join(
-    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
-    by = "orf") %>%
-  filter(Preferred_name != "-") %>% #In total 418 are annotated
-  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
-    inner_join(taxonomy, by = "orf") %>%
-    arrange(desc(logFC))
-  ) %>%
-  kable_styling(bootstrap_options = c("striped", "hover")) %>%
-  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
-  scroll_box(width = "100%", height = "500px")
-```
-### Archaea (personal interest)
-In this section I am focusing a bit on the archaeal response, as we have such a large fraction of archaea in the C treatment as opposed to the TN treatment.
-Out of the `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(taxonomy, by = "orf") %>% filter(domain == "Archaea") %>% nrow()` archaeal genes, only `r edgeR_orfs %>% filter(type == "Down") %>% inner_join(taxonomy, by = "orf") %>% filter(domain == "Archaea") %>% inner_join(eggnogs %>% distinct(orf, Preferred_name, best_og_desc),by = "orf") %>% filter(Preferred_name != "-") %>% nrow()` were annotated. Potentially we are missing important genes here. Interestingly, archaeal pili genes are [potentially very different](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2570433/pdf/nihms62201.pdf) from bacterial, and may not be properly identified with the eggnog-mapper if they are not well cahracterized. Indeed the flagellin in archaea ha similarities to the type IV pilus system, and homology search is not enough to identify them, suggesting novel mechanisms [Ref.](https://pubmed.ncbi.nlm.nih.gov/16983194/)
-```{r, message=F, warning=FALSE}
-kable(
-  edgeR_orfs %>%
-  filter(type == "Down") %>%
-  inner_join(
-    eggnogs %>% distinct(orf, Preferred_name, best_og_desc),
-    by = "orf") %>%
-  filter(Preferred_name != "-") %>% #In total 418 are annotated
-  mutate(Preferred_name = forcats::as_factor(Preferred_name) %>% fct_reorder(logFC, .desc = TRUE)) %>%
-    inner_join(taxonomy, by = "orf") %>%
-    filter(domain == "Archaea")
-  ) %>%
-  kable_styling(bootstrap_options = c("striped", "hover")) %>%
-  add_header_above(c("Annotated upreguated orfs with gene name and taxonomy" = 22), font_size = 18) %>%
-  scroll_box(width = "100%", height = "500px")
-```
-## Summary of interesting patterns from the gene expression analysis
-Excerpt from the powerpoint presented by Ashish an Johan:   
-"Blebbing of outer membrane, and release of membrane like vesicles are two characters which were significantly higher in TN treatment as compared to C, while the presence of pili all over surface were significantly higher in C in contrast to TN treatment.
-Connections between cells in combination with blebbing of outer membrane(Con + Blb) was the only combination which were significantly higher in TN in contrast to control."   
-
-Supporting these patterns:
-Among the genes not in the target list, but related to the morphological differences, upregulation of fliC may be an indication of cell connection (aggregation). Two genes related to different secretion systems were also noted in the TN-treatment (impA, virD4), potentially related to the cell connections. No genes related to conjugation (tra-genes) were upregulated in the TN-treatment. Furthermore, one ccmA gene was upregulated in the TN treatment (related to cell shape).   
-
-On the note of processes related to maintenance metabolism, the downregulated genes (upregulated in C-treatment) included the osmoregulatory gene proW, a type 1 restriction-modification gene hsdM, and two copies of the katG gene involved in oxidative stress. While the ATP genes were seen in both up and downregulated genes, but expressed by different taxa, suggesting a potential indicator for growth. The pepA was uprregulated in the C-treatment, which is related to intracellular protein turnover.
-
-# EdgeR 2 - analysis of genes summarised by "preferred_name" - compare taxonomic levels
-```{r edgeR_2}
+# EdgeR - analysis of genes summarised by "preferred_name" 
+```{r edgeR_2, message=F, warning=FALSE}
 design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
 colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
 
@@ -368,7 +157,7 @@ my.contrasts <- makeContrasts(warm_nutrientvscold_control=warm_nutrient-cold_con
 qlf.TNvsC <- glmQLFTest(dgelist, contrast=my.contrasts[,"warm_nutrientvscold_control"])
 ```
 
-```{r edgeR_2_tsv}
+```{r edgeR_2_tsv, message=F, warning=FALSE}
 topTags(qlf.TNvsC, n = Inf) %>%
 as.data.frame() %>%
   mutate(day = "17") %>%
@@ -387,7 +176,8 @@ as.data.frame() %>%
 ```
 
 ## Sanity check
-```{r edgeR_2_sanity_check}
+```{r edgeR_2_sanity_check, message=F, warning=FALSE}
+edgerPrefName <- read_tsv("../results/edgeR_preferred_name.tsv")
 
 upp <- edgerPrefName %>%
   filter(type == "Up") %>%
@@ -422,16 +212,18 @@ bbmap_p %>%
   theme(axis.text.x = element_text(hjust = 1, angle = 60)) +
   ylim(0, 5000)
 ```
-
-```{r overview_stats_list_of_genes}
-edgerPrefName <- read_tsv("../results/edgeR_preferred_name.tsv")
-
-edgerPrefName %>%
+        
+Table showing the number of downregulated, upregulated and non-differentially expressed.
+```{r overview_stats_list_of_genes, message=F, warning=FALSE}
+kable(edgerPrefName %>%
   group_by(type) %>%
   tally() %>%
   ungroup()
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
 ```
-```{r volcano_plot}
+Volcano plot of genes from DE-analysis
+```{r volcano_plot, message=F, warning=FALSE, fig.cap="Volcano plot of all genenames included in the analysis. X-axis is logCPM (abundance), Y-axis denote log-fold change. Dotted lines mark the minimum logFC of 2.5"}
 colours <- c("#ff0000","#000000","#4248f5")
 
 edgerPrefName %>%
@@ -442,29 +234,36 @@ edgerPrefName %>%
   geom_vline(xintercept = DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
   geom_vline(xintercept = -DIFF_TRESHOLD, colour = "green", linetype = "dashed") +
   theme_classic() +
-  coord_flip()
+  coord_flip() 
 ```
-```{r list_of_genes}
-edgerPrefName %>%
+
+Number of target genes based on a-priori gene list worked out by Ashish & Dennis in each category, instead of all genes involved in the analysis. Notably, no genes are downregulated (more expressed in the C-treatment). The issue with this analysis is the lack of genes in the target-list, nly nine genes are upregulated, and none are downregulated.
+```{r list_of_genes, message=F, warning=FALSE}
+kable(edgerPrefName %>%
   rename(gene = "Preferred_name") %>%
   inner_join(target_genes, by ="gene") %>%
   group_by(type) %>%
   tally() %>%
-  ungroup()
+  ungroup() 
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
 ```
-```{r gene_list_DE_genes}
-kable(
+
+Here the same list as above but with gene names included.   
+```{r gene_list_DE_genes, message=F, warning=FALSE}
+DT::datatable(
   edgerPrefName %>%
   rename(gene = "Preferred_name") %>%
   inner_join(target_genes, by ="gene") %>%
   arrange(desc(type))
   ) %>%
-  kable_styling(bootstrap_options = c("striped", "hover"))
+   DT::formatStyle(columns = colnames(df), fontSize = '150%')
 ```
 The majority of genes from the list were not differentially expressed between treatments. A total of 9 genes were upregulated in the TN-treatment, these were involved in Lipid transport and metabolism, restriction modification (type 1 and 3), crispr-cas, oxidative stress, outer membrane vesicles and lastly, mRNA syntehsis and lastly Oxidative stress.
 
 ## Plotting the most abundant upregulated genes
-```{r}
+Here the top50 most abundant and upregulated genes are plotted and investigated.
+```{r, message=F, warning=FALSE}
 
 upp <- edgerPrefName %>%
   filter(type == "Up") %>%
@@ -492,29 +291,70 @@ bbmap_p %>%
   geom_col() + 
   facet_wrap(~ type) +
   theme(axis.text.x = element_text(hjust = 1, angle = 60))
+```
 
+## How large is the fraction of the transcriptome that the genes are responsible for in the respective treatments??
+```{r}
+bbmap_p %>%
+  inner_join(sample_ID, by = "sample") %>%
+  filter(treatment %in% c("C","TN")) %>%
+  group_by(orf, treatment) %>%
+  summarise(mean_tpm = mean(tpm)) %>%
+  ungroup() %>%
+  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf") %>%
+  filter(Preferred_name %in% (edgerPrefName %>% filter(type == "Up") %>% pull(Preferred_name))) %>%
+  group_by(treatment) %>%
+  summarise(sum_tpm = sum(mean_tpm)) %>%
+  ungroup() 
+
+## In the TN-treatment the Upregulated genes were on average responsible for 19514.315 tpm
+ bbmap_p %>%
+  inner_join(sample_ID, by = "sample") %>%
+  filter(treatment %in% c("C","TN")) %>%
+  group_by(orf, treatment) %>%
+  summarise(mean_tpm = mean(tpm)) %>%
+  ungroup() %>%
+  inner_join(eggnogs %>% distinct(orf, Preferred_name), by = "orf") %>%
+  filter(Preferred_name %in% (edgerPrefName %>% filter(type == "Down") %>% pull(Preferred_name))) %>%
+  group_by(treatment) %>%
+  summarise(sum_tpm = sum(mean_tpm)) %>%
+  ungroup() 
+```
+
+### Creating supplementary table
+```{r}
+#This table contains logFC, logCPM, up or down regulation, add the category info
+edgerPrefName %>%
+  left_join(gene_categories, by = "Preferred_name") %>%
+  write_tsv("../results/DE_supp_table.tsv")
+```
+
+
+After shortly going through the list of the top50, these few genes I deemed potentially relevant in relation to morphological differences,  due to the abundance perspective;       
+   
+   
+[cpsB](https://www.uniprot.org/uniprotkb/Q54518/entry) - capsule polysaccharide biosynthetic process   
+[skp](https://www.uniprot.org/uniprotkb/P0AEU7/entry) - chaperonin required for efficient release of ompA from inner membrane.   
+[tonB2](https://www.uniprot.org/uniprotkb/Q9RMT3/entry) - Interacts with outer membrane receptor proteins, uptake into periplasm.   
+[yfmR](https://www.uniprot.org/uniprotkb/O06476/entry) - ABC transporter.   
+```{r eval=FALSE}
 eggnogs %>% 
   distinct(Preferred_name, best_og_desc) %>%
   filter(Preferred_name %in% upp) %>%
   select(Preferred_name, best_og_desc) %>%
   view("top50_upp")
 ```
-Among the top50, genes potentially related to significant differenes seen in morphology are:   
-[cpsB](https://www.uniprot.org/uniprotkb/Q54518/entry) - capsule polysaccharide biosynthetic process   
-[skp](https://www.uniprot.org/uniprotkb/P0AEU7/entry) - chaperonin required for efficient release of ompA from inner membrane.   
-[tonB2](https://www.uniprot.org/uniprotkb/Q9RMT3/entry) - Interacts with outer membrane receptor proteins, uptake into preiplasm.   
-[yfmR](https://www.uniprot.org/uniprotkb/O06476/entry) - ABC transporter.   
 
-Other interesrting metabolism genes among the top50:   
-[fadEHIN](https://www.uniprot.org/uniprotkb/Q47146/entry) - fatty acid beta oxidation   
+Other interesting metabolism genes among the top50:   
+[fadEHIN](https://www.uniprot.org/uniprotkb/Q47146/entry) - fatty acid beta oxidation     
 
 ## The rest of the upregulated genes
-
+Here I filtered the genelist on upregulated genes and went through the genenames with the statistical difference in mind, and tried to find genes that could support what is found in the morhplogy, mainly blebbing and cell-cell connections.   
 Excerpt from the powerpoint presented by Ashish an Johan:   
 "Blebbing of outer membrane, and release of membrane like vesicles are two characters which were significantly higher in TN treatment as compared to C, while the presence of pili all over surface were significantly higher in C in contrast to TN treatment.
 Connections between cells in combination with blebbing of outer membrane(Con + Blb) was the only combination which were significantly higher in TN in contrast to control."   
-## All genenames from DE-analysis
-```{r DE_genes_overview}
+## All genenames from DE-analysis (Upregulation)
+```{r DE_genes_overview, message=F, warning=FALSE}
 DT::datatable(
   edgerPrefName %>%
   rename(gene = "Preferred_name") %>%
@@ -541,10 +381,10 @@ Focusing on the whole list, the upregulated genes also contained:
 [cmr6](https://www.uniprot.org/uniprotkb/Q8U1T1/entry) - CRISPR   
 [cpsB](https://www.uniprot.org/uniprotkb/Q54518/entry) - capsule polysaccharide biosynthetic process   
 [cpsE](https://www.uniprot.org/uniprotkb/Q04664/entry) - capsule polysaccharide biosynthetic process   
-[ctra](https://www.uniprot.org/uniprotkb/P0A0V9/entry) - involved in transport of capsular polysaccharides to cell surface.    
+[ctrA](https://www.uniprot.org/uniprotkb/P0A0V9/entry) - involved in transport of capsular polysaccharides to cell surface.    
 "Capsular polysaccharides may promote adherence of bacteria to both surfaces and other bacterial cells, which may facilitate colonization of a particular niche and may lead to the formation of biofilms [13]. Cell-surface polysaccharides have been shown to mediate the attachment of bacterial cells to one another, leading to biofilm formation and persistence of the organisms during colonization [1, 14]." - https://www.intechopen.com/chapters/40582   
 [flaA](https://www.uniprot.org/uniprotkb/P27053/entry) - Flagellin   
-[fleS](https://www.uniprot.org/uniprotkb/Q9I4N4/entry) - flagellar synthesis, adhesion, swatming motility and antibiotic resistance.   
+[fleS](https://www.uniprot.org/uniprotkb/Q9I4N4/entry) - flagellar synthesis, adhesion, swarming motility and antibiotic resistance.   
 [flgN](https://www.uniprot.org/uniprotkb/P0A1J7/entry) - flagellum   
 [hdc](https://www.uniprot.org/uniprotkb/Q56581/entry) - siderophore THIS IS INTERESTING FORM MORPHOLOGY   
 [hipA](https://www.uniprot.org/uniprotkb/P23874/entry) - TA-system, toxin/antitoxin, dormancy process    
@@ -568,7 +408,7 @@ Focusing on the whole list, the upregulated genes also contained:
 [pilP](https://www.uniprot.org/uniprotkb/G3XCX7/entry) - T4SS 
 [pilU](https://www.uniprot.org/uniprotkb/G3XCX3/entry) - T4SS 
 [raxST](https://www.uniprot.org/uniprotkb/P08764/entry) - Restriction system   
-[fraJ](https://www.uniprot.org/uniprotkb/P27129/entry) - LPS biosynthesis   
+[rfaJ](https://www.uniprot.org/uniprotkb/P27129/entry) - LPS biosynthesis   
 [supH](https://www.uniprot.org/uniprotkb/Q8A1G1/entry) - transport of oligosaccharides from surface of Outer Membrane to the periplasm      
 [tonB2](https://www.uniprot.org/uniprotkb/Q9RMT3/entry) - transport to inner membrane prot potentially   
 [virD4](https://www.uniprot.org/uniprotkb/Q6FYV9/entry) - T4SS   
@@ -576,7 +416,92 @@ Focusing on the whole list, the upregulated genes also contained:
 [waaM](https://www.uniprot.org/uniprotkb/P0ACV0/entry) - LPS biosynthesis  
 [ybdG](https://www.uniprot.org/uniprotkb/P0AAT4/entry) - Meachanosensitive channel   
 [ybis](https://www.uniprot.org/uniprotkb/P0AAX8/entry) - anchoring of Major outermembrane lipoprotein (Braun lipoprotein)   
-[ydhB](https://www.uniprot.org/uniprotkb/O05493/entry) - probable membrane transproter protein
+[ydhB](https://www.uniprot.org/uniprotkb/O05493/entry) - probable membrane transproter protein   
+[ykuF](https://www.uniprot.org/uniprotkb/O34717/entry) - FA beta cxidation   
+These are some of the genes that I could make sense out of, see the above gene list if you want to look through the genes further.   
 
 
-To summarise all the genes in this cateogory, the genes noted may provide support for the patterns seen in the morphology, among others T4SS shows up, chemotaxis may help explain the cell aggregation we see. LPS, siderophore and capsular polysaccharide genes may be supportive in explaining the  processes behind blebbing
+Summarising all genenames upregulated in the TN-treatment, the genenames noted may provide support for the patterns seen in the morphology; among others T4SS shows up, chemotaxis may help explain the cell aggregation we see. LPS, siderophore and capsular polysaccharide genes may be supportive in explaining the processes behind blebbing. Is it feasible that chemotaxis is employed for aggregation, or perhaps a response to the aggregation???
+
+## Down-regulated genes
+
+
+[alaC](https://www.uniprot.org/uniprotkb/P77434/entry) - alanine synthesis   
+[bphC1](https://www.uniprot.org/uniprotkb/P47231/entry) - xenobiotic degradation   
+[cbbL](https://www.uniprot.org/uniprotkb/O85040/entry) - RuBisCo - large chain   
+[cbbQ](https://www.uniprot.org/uniprotkb/Q51858/entry) - RuBisCo related   
+[cobI](https://www.uniprot.org/uniprotkb/Q9HZU3/entry) - cobalamin synthesis.   
+[cpeA](https://www.uniprot.org/uniprotkb/Q02179/entry) - lightharvesting protein   
+[cpeB](https://www.uniprot.org/uniprotkb/Q02180/entry) - lightharvesting protein   
+[cpeC](https://www.uniprot.org/uniprotkb/P18542/entry) - related to light harvesting protein   
+[ddhA](https://www.uniprot.org/uniprotkb/Q8GPG4/entry) - photoautotrophic growth on DMS as e-donor   
+[ddhB](https://www.uniprot.org/uniprotkb/Q8GPG3/entry) - related to anaerobic DMS growth.   
+[dnaK2](https://www.uniprot.org/uniprotkb/Q6LS31/entry) - chaperone   
+[groL1](https://www.uniprot.org/uniprotkb/P9WPE9/entry) - chaperonin   
+[ihfB](https://www.uniprot.org/uniprotkb/P0A6Y1/entry) - viral, conjugation, translational control and more..    
+[katA](https://www.uniprot.org/uniprotkb/P29422/entry) - peroxidase   
+[lig](https://www.uniprot.org/uniprotkb/P56709/entry) - DNA ligase, recombination and repair   
+[marR](https://www.uniprot.org/uniprotkb/P27245/entry) - antibiotic resistance   
+[mcpC](https://www.uniprot.org/uniprotkb/P54576/entry) - chemotaxis   
+[narJ](https://www.uniprot.org/uniprotkb/P0AF26/entry) - nitrate reductase related chaperone   
+[narK](https://www.uniprot.org/uniprotkb/P10903/entry) - nitrite/nitrate uptake   
+[nsrR](https://www.uniprot.org/uniprotkb/O07573/entry) - NO-responsive transcriptional regulator   
+[phnH](https://www.uniprot.org/uniprotkb/P16686/entry) - phosphonate metabolism   
+[porB](https://www.uniprot.org/uniprotkb/P30689/entry) - porin   
+[psaA](https://www.uniprot.org/uniprotkb/P56766/entry) - photosystem 1   
+[psbA2](https://www.uniprot.org/uniprotkb/P0A446/entry) - photosystem 2   
+[rpoK](https://www.uniprot.org/uniprotkb/P39463/entry) - transcription   
+[sglT](https://www.uniprot.org/uniprotkb/P96169/entry) - sodium/glucose transporter   
+[speE2](https://www.uniprot.org/uniprotkb/Q9X8S2/entry) - spermedine biosynthesis   
+[tlpC](https://www.uniprot.org/uniprotkb/P39209/entry) - chemotaxis related   
+[wspC](https://www.uniprot.org/uniprotkb/Q88MS8/entry) - probable biofilm formation related   
+[ycjP](https://www.uniprot.org/uniprotkb/P77716/entry) - probable ABC transport permease protein   
+[ydhH](https://www.uniprot.org/uniprotkb/O07577/entry) - sodium dependent transporter   
+[ynjD](https://www.uniprot.org/uniprotkb/P76909/entry) - uncharacterized ABC transporter ATP-binding protein   
+[yvcC](https://www.uniprot.org/uniprotkb/O06967/entry) - related to multidrug resistance      
+   
+The down-regulated genes is a bit harder to summarise as there is a more diverse respoonse. However it appears that genes such as T4SS, LPS biotynthesis, capsular polysaccharides and siderophores are not well represented in comparison to the upregulated genes.   
+
+## Plot of genes with categories
+
+```{r}
+p <- edgerPrefName %>%
+  inner_join(gene_categories, by = "Preferred_name") %>%
+  mutate(Preferred_name = as.factor(Preferred_name) %>% fct_reorder(category)) %>%
+  mutate(treatment = ifelse(type == "Up","TN","C")) %>%
+  ggplot(mapping = aes(x = Preferred_name, y = logFC, colour = category)) +
+  geom_point(aes(size = logCPM)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(hjust = 1, angle = 60), legend.position = "bottom", text = element_text(size = 8), legend.spacing.x = unit(0.08, 'cm')) +
+  xlab("Genename") +
+  scale_colour_manual('Category', values = GEOM_COL_COLOURS) +
+  scale_x_discrete(expand = c(0, 0.5)) 
+
+p + ggforce::facet_row(vars(treatment), scales = 'free', space = 'free')
+
+ggsave("../results/diff_genecats.png", bg = "white", height = 8, units = "cm")
+
+```
+
+## How many genes in each category??
+```{r}
+gene_categories %>%
+  group_by(category) %>%
+  tally() %>%
+  ungroup() %>%
+  arrange(desc(n))
+```
+
+## Investigate proteorhodopsin related genes
+```{r}
+# Genes related to proteorhodopsin (from Kimura et al. 2011 ISME)
+  #idi -present 
+  #ispA - present
+  #crtE - present
+  #crtB - present
+  #crtI - present
+  #crtY - present
+  #blh - present
+# LogCPM around 4 or so, perhaps abundant in all treatments? This would suggest a stable but important function to the system!
+```
+
