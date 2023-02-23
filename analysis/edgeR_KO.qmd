@@ -1,0 +1,277 @@
+---
+title: "edgeR_KO"
+author: "Dennis Amnebrink"
+affiliation-title: "Linnaeus University"
+title-block-banner: true
+date: now
+editor: visual
+toc: true
+prefer-html: true
+number-sections: true
+format:
+  html:
+     code-fold: true
+     self-contained: true
+---
+
+```{r}
+SIGNIFICANCE = 0.05
+MIN_COUNT = 15
+MIN_SAMPLE = 2
+```
+
+```{r}
+
+```
+
+```{r}
+GEOM_COL_COLOURS = c(
+  RColorBrewer::brewer.pal(12, name = 'Paired'))
+
+GEOM_COL_COLOURS1 = c(GEOM_COL_COLOURS, "#D3D3D3")
+```
+
+```{r}
+#| label: libraries
+#| warning: false
+library(tidyverse)
+library(data.table)
+library(edgeR)
+library(kableExtra)
+library(viridis)
+library(patchwork)
+library(ggbreak)
+library(DT)
+```
+
+# Load in data from data2 folder
+
+## Subheading 2
+
+### Subheading 3
+
+```{r}
+#| label: file-loading
+#| warning: false
+#| cache: true
+#File to connect NGI ID with our own classification ID, add the µ-values to this file for testing later, or do that in a sep file?
+sample_ID <- read_tsv("../data/J.Pinhassi_21_02_sample_info.txt") %>%
+  dplyr::select(1:2) %>%
+  dplyr::rename(sample = 1, sample_name = 2) %>%
+  mutate(sample_name = str_replace(sample_name, "[0-9]*:","")) %>%
+  separate(sample_name, c("treatment","timepoint"), sep = ",") %>%
+  mutate(treatment = gsub("NT","TN", treatment)) %>%
+  mutate(sample_name = paste(timepoint, treatment, sep = "_")) %>%
+  separate(treatment, c("treatment","replicate"), sep = -1) %>%
+  mutate(tre_rep = gsub("_","", sample_name)) %>%
+  mutate(tre_rep = toupper(tre_rep)) %>%
+  mutate(day = case_when( timepoint == "t3" ~ 10,
+                          TRUE ~ 17
+                          )
+         )
+
+target_genes <- read_tsv("../data/list_of_genes.tsv") 
+
+#Reading in annotations
+eggnogs <- read_tsv("../data2/all_samples.emapper.annotations.tsv", comment = "#")  %>%
+  rename(orf = "query") 
+  
+
+#Reading in taxonomic annotation of reads
+taxonomy <- read_tsv("../data2/out.CAT.contig2classification.names.txt.gz") %>%
+  rename(chr = "# contig") %>%
+  mutate(superkingdom = gsub(":.*","",superkingdom),
+         phylum = gsub(":.*","",phylum),
+         class = gsub(":.*","",class),
+         order = gsub(":.*","",order),
+         family = gsub(":.*","",family),
+         genus = gsub(":.*","",genus),
+         species = gsub(":.*","",species),
+         )
+
+#Count file for all orfs, tpm is calculated per sample
+bbmap <- fread("../data2/counts.tsv.gz", sep = "\t") %>%
+              filter(count > 0)    %>%                           # removing 0 counts to reduce size of table
+              mutate(sample = str_extract(sample, "P[0-9]*_[0-9]*")) #Removing trailing sample information
+
+rm_values <- read_tsv("../data/Rm_values.tsv")
+
+gene_categories <- read_tsv("../data/gene_categories.tsv")
+
+kofamscan <- read_tsv("../data2/prokka.kofamscan.tsv.gz")
+ 
+
+obj1 <- kofamscan %>%
+  mutate(score = as.numeric(score)) %>%
+  select(-1) %>% #Removing significance column, not needed
+  rename(orf = "gene name") %>%
+  group_by(orf) %>% #This grop_by selects best hit of all KO's
+  slice_max(score, n = 1) %>%
+  ungroup()
+
+obj2 <- kofamscan %>%
+  mutate(score = as.numeric(score)) %>%
+  select(-1) %>% #Removing significance column, not needed
+  rename(orf = "gene name") %>%
+  group_by(orf) %>% #This grop_by selects best hit of all KO's
+  arrange(desc(score)) %>%
+  slice(1) %>%
+  ungroup()
+```
+
+```{r}
+#| cache: true
+#| warning: false
+#Removing non-prokreads as well as recalculating tpm over prok frac.
+bbmap_p <- bbmap %>% 
+  semi_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), 
+            by = "chr") %>%
+  dplyr::select(-tpm) %>%
+   group_by(sample) %>%
+            mutate(t = count/length) %>%
+            mutate(tpm = t/sum(t)*1e6) %>%
+   ungroup()
+```
+
+# EdgeR- analysis
+
+```{r}
+#| label: edgeR-analysis
+#| warning: false
+#| cache: true
+
+#| label: edgeR
+#| cache: true
+#| warning: false
+design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
+colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
+
+#Creating DGElist
+dgelist <- bbmap_p %>%
+  group_by(orf) %>%
+  filter(sum(count) >= MIN_COUNT, n() >= MIN_SAMPLE) %>%
+  ungroup() %>%
+  semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
+  inner_join(eggnogs, by = 'orf') %>%
+  group_by(KEGG_ko, sample) %>%
+  summarise(count = sum(count), .groups = 'drop') %>%
+  ungroup() %>%
+  filter(KEGG_ko != "-") %>%
+  pivot_wider(names_from = sample, values_from = count, values_fill = 0) %>%
+  as.data.frame() %>%
+  tibble::column_to_rownames('KEGG_ko') %>%
+  DGEList() %>%
+  calcNormFactors() %>%
+  estimateDisp(design) %>%
+  glmQLFit(design, robust = TRUE)
+
+#Creating contrasts
+my.contrasts <- makeContrasts(warm_nutrientvscold_control=warm_nutrient-cold_control, levels=design)
+
+qlf.TNvsC <- glmQLFTest(dgelist, contrast=my.contrasts[,"warm_nutrientvscold_control"])
+```
+
+```{r}
+#| warning: false
+#| cache: true
+#| 
+day17 <- topTags(qlf.TNvsC, n = Inf) %>%
+  as.data.frame() %>%
+  mutate(day = "17") %>%
+  rownames_to_column("KEGG_ko") %>%
+  select(-FDR)
+
+edgeR_KO <- day17 %>%
+  mutate(fdr = p.adjust(PValue, method = "fdr")) %>%
+  mutate(type = 
+           case_when(
+             (fdr <= SIGNIFICANCE & logFC > 0) ~ "Up",
+             (fdr <= SIGNIFICANCE & logFC < 0) ~ "Down",
+             TRUE ~"non-DE"
+           )) %>%
+  mutate(type = forcats::as_factor(type) %>% fct_relevel("Up","non-DE","Down"))
+
+write_tsv(edgeR_KO, "../results/edgeR_KO.tsv")
+```
+
+The edgeR analysis revealed 809 genes more abundant in the TN-treatment, and 1006 more abundant in the C-treatment (@tbl-overview)
+
+```{r}
+#| label: tbl-overview
+#| tbl-cap: "EdgeR summary of genefunctions"
+#| warning: false
+edgeR_KO <- read_tsv("../results/edgeR_KO.tsv")
+
+kable(edgeR_Preferred_name %>%
+  group_by(type) %>%
+  tally() %>%
+  ungroup() %>%
+  rename("No. of genes" = "n"))
+```
+
+```{r}
+#| label: fig-volcano
+#| warning: false
+#| eval: false
+edgeR_KO %>% 
+  ggplot(mapping = aes(x=logCPM, y = logFC, colour=type, size = type)) +
+  geom_point()  +
+  scale_size_manual(values = c("Down" = 1.5, "Up"=1.5, "non-DE" = 0.3)) +
+  scale_colour_manual(values = c("Down" = "Blue","Up" = "Red", "non-DE" = "Black")) +
+  theme_minimal() +
+  geom_hline(aes(yintercept = DIFF_TRESHOLD), linetype = "dashed", color = "green") +
+  geom_hline(aes(yintercept = -DIFF_TRESHOLD), linetype = "dashed", color = "green")
+```
+
+Among the target-gene list, only 9 genes were statistically upregulated in the TN-treatment (@tbl-Up). Thus from here we employ a different approach to identify patterns connected to morphology, by looking at large scale patterns and investigating genes of interest in the statistically different gene pools.
+
+```{r}
+#| label: tbl-Up
+#| tbl-cap: "Target genes among the TN-abundant genes, and their classification."
+#| warning: false
+
+#Upload the targent gene lists into kegg and get annotation that way.
+#Identifying target genes in the positive DE-expressed genes
+targetUp <- edgeR_KO %>%
+  filter(type == "Up") 
+
+kable(targetUp %>% arrange(KEGG_ko))
+```
+
+```{r}
+#| label: tbl-Down
+#| tbl-cap: "Target genes among the C-abundant genes, and their classification."
+#| warning: false
+#| eval: false
+#Identifying target genes in the negative DE-expressed genes
+targetDown <- edgeR_KO %>%
+  filter(type == "Down") 
+
+  kable(targetDown %>% arrange(KEGG_ko))
+```
+
+After running and comparing the analysis, it is clear to see that several kegg_KO terms are sharing hits, and thus it becomes ambiguous to retreve information on which to select, due to this Daniel is running a different progfram where this information is provided and a best hit can then be selected.
+
+```{r}
+p1 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  inner_join(eggnogs %>% distinct(orf, KEGG_ko), by = "orf") %>%
+  inner_join(edgeR_KO %>%
+    filter(type != "non-DE"), 
+    by = "KEGG_ko") %>%
+  group_by(KEGG_ko, treatment, type) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:100) %>%
+  ggplot(mapping = aes(x = KEGG_ko, y = tpm, fill = type)) +
+  geom_col() +
+  facet_wrap(~ treatment) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 90))
+
+ggplotly(p1)
+```
