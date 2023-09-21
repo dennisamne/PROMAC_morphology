@@ -21,10 +21,6 @@ MIN_SAMPLE = 2
 ```
 
 ```{r}
-
-```
-
-```{r}
 GEOM_COL_COLOURS = c(
   RColorBrewer::brewer.pal(12, name = 'Paired'))
 
@@ -43,12 +39,6 @@ library(patchwork)
 library(ggbreak)
 library(DT)
 ```
-
-# Load in data from data2 folder
-
-## Subheading 2
-
-### Subheading 3
 
 ```{r}
 #| label: file-loading
@@ -75,6 +65,7 @@ target_genes <- read_tsv("../data/list_of_genes.tsv")
 #Reading in annotations
 eggnogs <- read_tsv("../data2/all_samples.emapper.annotations.tsv", comment = "#")  %>%
   rename(orf = "query") 
+
   
 
 #Reading in taxonomic annotation of reads
@@ -89,6 +80,7 @@ taxonomy <- read_tsv("../data2/out.CAT.contig2classification.names.txt.gz") %>%
          species = gsub(":.*","",species),
          )
 
+
 #Count file for all orfs, tpm is calculated per sample
 bbmap <- fread("../data2/counts.tsv.gz", sep = "\t") %>%
               filter(count > 0)    %>%                           # removing 0 counts to reduce size of table
@@ -98,25 +90,29 @@ rm_values <- read_tsv("../data/Rm_values.tsv")
 
 gene_categories <- read_tsv("../data/gene_categories.tsv")
 
-kofamscan <- read_tsv("../data2/prokka.kofamscan.tsv.gz")
- 
+kofamscan <- fread("../data2/kofamscan2.tsv.gz", sep = "\t" ) %>%# A few KO-terms have several hits, to remove this issue these are annotated as ambiguous instead, to keep information but remove row duplications
+rename(orf = "gene name",
+       KEGG_ko = "KO",
+       evalue = 6) %>%
+  filter(evalue < 1e-5) %>%
+  group_by(orf) %>%
+  slice_max(order_by = score, n = 1) %>%
+  ungroup() %>%
+  group_by(orf) %>% #This grop_by selects best hit of all KO's based on evalue (only if similar bitscore)
+  slice_min(order_by = evalue, n = 1) %>%
+  ungroup() %>%
+  group_by(orf) %>% #This grop_by selects best hit of all KO's based on treshold (only if similar bitscore)
+  slice(1) %>% # All duplicates are now removed
+  ungroup() %>%
+  select(-1)
 
-obj1 <- kofamscan %>%
-  mutate(score = as.numeric(score)) %>%
-  select(-1) %>% #Removing significance column, not needed
-  rename(orf = "gene name") %>%
-  group_by(orf) %>% #This grop_by selects best hit of all KO's
-  slice_max(score, n = 1) %>%
-  ungroup()
+koUpLegend <- read_tsv("../data2/koTermsUpLegend.tsv", col_names = c("KEGG_ko","gene","Description")) 
+    
+   
+koDownLegend <- read_tsv("../data2/koTermsDownLegend.tsv", col_names = c("KEGG_ko","gene","Description"))
 
-obj2 <- kofamscan %>%
-  mutate(score = as.numeric(score)) %>%
-  select(-1) %>% #Removing significance column, not needed
-  rename(orf = "gene name") %>%
-  group_by(orf) %>% #This grop_by selects best hit of all KO's
-  arrange(desc(score)) %>%
-  slice(1) %>%
-  ungroup()
+cog_legend <- read_tsv("../data2/COG_categories.tsv")
+
 ```
 
 ```{r}
@@ -135,32 +131,42 @@ bbmap_p <- bbmap %>%
 
 # EdgeR- analysis
 
+EdgeR-analysis of the day 17 TN vs C-treatment on using the KO-system [annotation](https://www.kegg.jp/).
+
 ```{r}
 #| label: edgeR-analysis
 #| warning: false
 #| cache: true
 
-#| label: edgeR
-#| cache: true
-#| warning: false
 design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
 colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
 
+#Creating sample vector with library sizes to feed into normalization.
+libSizes <- bbmap_p %>%
+  group_by(orf) %>%
+  filter(sum(count) >= MIN_COUNT, n() >= MIN_SAMPLE) %>%
+  ungroup() %>%
+  semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
+  select(sample, orf, count) %>%
+  spread(sample, count, fill = 0) %>%
+  column_to_rownames("orf") %>%
+  colSums() %>%
+  as.vector()
+  
 #Creating DGElist
 dgelist <- bbmap_p %>%
   group_by(orf) %>%
   filter(sum(count) >= MIN_COUNT, n() >= MIN_SAMPLE) %>%
   ungroup() %>%
   semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
-  inner_join(eggnogs, by = 'orf') %>%
+  inner_join(kofamscan %>% select(orf, KEGG_ko), by = 'orf') %>%
   group_by(KEGG_ko, sample) %>%
   summarise(count = sum(count), .groups = 'drop') %>%
   ungroup() %>%
-  filter(KEGG_ko != "-") %>%
   pivot_wider(names_from = sample, values_from = count, values_fill = 0) %>%
   as.data.frame() %>%
   tibble::column_to_rownames('KEGG_ko') %>%
-  DGEList() %>%
+  DGEList(lib.size = libSizes) %>% #This is where the libSizes need to be specified.
   calcNormFactors() %>%
   estimateDisp(design) %>%
   glmQLFit(design, robust = TRUE)
@@ -174,7 +180,8 @@ qlf.TNvsC <- glmQLFTest(dgelist, contrast=my.contrasts[,"warm_nutrientvscold_con
 ```{r}
 #| warning: false
 #| cache: true
-#| 
+#| label: file_writing
+
 day17 <- topTags(qlf.TNvsC, n = Inf) %>%
   as.data.frame() %>%
   mutate(day = "17") %>%
@@ -194,7 +201,9 @@ edgeR_KO <- day17 %>%
 write_tsv(edgeR_KO, "../results/edgeR_KO.tsv")
 ```
 
-The edgeR analysis revealed 809 genes more abundant in the TN-treatment, and 1006 more abundant in the C-treatment (@tbl-overview)
+## General results and the target genes
+
+The analysis revealed 165 genes more abundant in the TN-treatment, and 178 more abundant in the C-treatment (@tbl-overview). As you soon will see, the amount of genes in the target gene list were so few, that they were included in the large scale analysis instead, but are still presented here for you to see. The section summarising the expressino results is the section called "The rest of the DE-genes".
 
 ```{r}
 #| label: tbl-overview
@@ -202,11 +211,33 @@ The edgeR analysis revealed 809 genes more abundant in the TN-treatment, and 100
 #| warning: false
 edgeR_KO <- read_tsv("../results/edgeR_KO.tsv")
 
-kable(edgeR_Preferred_name %>%
+kable(edgeR_KO %>%
   group_by(type) %>%
   tally() %>%
   ungroup() %>%
-  rename("No. of genes" = "n"))
+  rename("No. of genes" = "n")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+edgeR_KO %>% 
+  filter(type == "Up") %>%
+  mutate(gene = paste0("gene",row_number())) %>%
+  select(gene, KEGG_ko) %>%
+  write_tsv("../data2/koterms_up.tsv")
+
+edgeR_KO %>% 
+  filter(type == "Down") %>%
+  mutate(gene = paste0("gene",row_number())) %>%
+  select(gene, KEGG_ko) %>%
+  write_tsv("../data2/koterms_down.tsv")
+
+#Trying the mapper using all information criteria
+
+  edgeR_KO %>%
+    mutate(colour = case_when(type == "Up" ~ "red",
+                              type == "Down" ~ "blue",
+                              TRUE ~"grey")) %>%
+    select(KEGG_ko, colour) %>%
+    write_tsv("../data2/kegg_mapper.tsv")
 ```
 
 ```{r}
@@ -218,60 +249,434 @@ edgeR_KO %>%
   geom_point()  +
   scale_size_manual(values = c("Down" = 1.5, "Up"=1.5, "non-DE" = 0.3)) +
   scale_colour_manual(values = c("Down" = "Blue","Up" = "Red", "non-DE" = "Black")) +
-  theme_minimal() +
-  geom_hline(aes(yintercept = DIFF_TRESHOLD), linetype = "dashed", color = "green") +
-  geom_hline(aes(yintercept = -DIFF_TRESHOLD), linetype = "dashed", color = "green")
+  theme_minimal() 
 ```
 
-Among the target-gene list, only 9 genes were statistically upregulated in the TN-treatment (@tbl-Up). Thus from here we employ a different approach to identify patterns connected to morphology, by looking at large scale patterns and investigating genes of interest in the statistically different gene pools.
+Among the target-gene list, only 2 genes were statistically upregulated in the TN-treatment (@tbl-Up). Thus from here we employ a different approach to identify patterns connected to morphology, summarising the overall patterns seen using the KO-terms. But first we inspect the downregulated genes below.
 
 ```{r}
 #| label: tbl-Up
 #| tbl-cap: "Target genes among the TN-abundant genes, and their classification."
 #| warning: false
 
-#Upload the targent gene lists into kegg and get annotation that way.
+#Upload the target gene lists into kegg and get annotation that way.
 #Identifying target genes in the positive DE-expressed genes
-targetUp <- edgeR_KO %>%
-  filter(type == "Up") 
-
-kable(targetUp %>% arrange(KEGG_ko))
+kable(edgeR_KO %>%
+  filter(type == "Up") %>%
+  inner_join(koUpLegend %>% separate_rows(gene, sep = ","), by = "KEGG_ko") %>% # Removing several gene-namesin one row
+  inner_join(target_genes, by = "gene")
+ ) %>%
+   kable_styling(bootstrap_options = c("striped", "hover"))
 ```
+
+The genes abundant in the C-treatment included 6 genes from the target gene list (@tbl-Down). Three of these were osmoregulatory genes involed in betaine/proline transport, and a membrane porin.
 
 ```{r}
 #| label: tbl-Down
 #| tbl-cap: "Target genes among the C-abundant genes, and their classification."
 #| warning: false
-#| eval: false
-#Identifying target genes in the negative DE-expressed genes
-targetDown <- edgeR_KO %>%
-  filter(type == "Down") 
 
-  kable(targetDown %>% arrange(KEGG_ko))
+#Identifying target genes in the negative DE-expressed genes
+ kable(edgeR_KO %>%
+  filter(type == "Down") %>%
+  inner_join(koDownLegend %>% separate_rows(gene, sep = ","), by = "KEGG_ko") %>% # Removing several gene-namesin one row
+  inner_join(target_genes, by = "gene")
+ ) %>%
+   kable_styling(bootstrap_options = c("striped", "hover"))
 ```
 
-After running and comparing the analysis, it is clear to see that several kegg_KO terms are sharing hits, and thus it becomes ambiguous to retreve information on which to select, due to this Daniel is running a different progfram where this information is provided and a best hit can then be selected.
+## The rest of the DE-genes
+
+### The TN-abundant genes
+
+Here I employ a legend to relate the genes to the morphological charateristics
+
+🟢 - Gene is related to cell-cell connections and aggregation (higher in TN-treatment)
+
+🟠 - Gene is related to OMV's (Higher in TN-treatment)
+
+#### electron-transport chain:
+
+*ccmF*\
+*ccmG*\
+*coxA*\
+
+#### Morphology genes:
+
+[*csgB*](https://www.kegg.jp/entry/K04335) a minor curlin subunit\
+**Flagellar and flagellin related genes**\
+[*flaG*](https://www.kegg.jp/entry/K06603)\
+[*flgB*](https://www.kegg.jp/entry/K02387)\
+[flgO](https://www.kegg.jp/entry/K24344)\
+[*fliC*](https://www.kegg.jp/entry/K02406)\
+[*fliD*](https://www.kegg.jp/entry/K02407)\
+[*pilU*](https://www.kegg.jp/entry/K02670) a twitching motility protein\
+Adherence proteins in [T2SS](https://en.wikipedia.org/wiki/Type_II_secretion_system), which is coupled with quorom sensing, and not pathogenic popped up:\
+[*tadB*](https://www.kegg.jp/entry/K12510) 🟢\
+[*tadC*](https://www.kegg.jp/entry/K12511) 🟢\
+[*tadE*](https://www.kegg.jp/entry/K12513) 🟢\
+[*rpoS*](https://www.kegg.jp/entry/K03087) sigma factor involved in biofilm formation. 🟢\
+[*glgA*](https://www.kegg.jp/entry/K00703) a starch synthase involved in biofilm formation. 🟢\
+[*csrA*](https://www.kegg.jp/entry/K03563) a carbon storage regulator involved in biofilm formation. 🟢\
+[*bifA*](https://www.kegg.jp/entry/K21024) - a phosphodiesterase involved in biofilm formation. 🟢\
+
+#### Chemotaxis and quorom sensing:
+
+[*mcp*](https://www.kegg.jp/entry/K03406), involved in bacterial chemotaxis 🟢\
+[*ABC.SP.A*](https://www.kegg.jp/entry/K02052) - putrescine/spermedine related invoved in quorom sensing among others 🟢\
+
+#### Multidrug resistance:
+
+[*mexT*](https://www.kegg.jp/entry/K18297).\
+
+#### Viral and defense genes:
+
+[*hsdR*](https://www.kegg.jp/entry/K01153) - type1-restriction enzyme\
+[*K07317*](https://www.kegg.jp/entry/K07317) - a type2 R-M system\
+[*uvsW*](https://www.kegg.jp/entry/K18959) - a viral protein encoding gene\
+[*gp23*](https://www.kegg.jp/entry/K21079) - phage major capsid protein\
+[*gp46*](https://www.kegg.jp/entry/K26043) - phage exonuclease subunit (by virus, not defense)\
+[*gp47*](https://www.kegg.jp/entry/K26048) - phage exonuclease subunit (by virus, not defense)\
+[*gp55*](https://www.kegg.jp/entry/K22007) - phage poymerase sigma factor\
+
+#### LPS and OMV's:
+
+[*waaJ*](https://www.kegg.jp/entry/K03279) - LPS biosynthesis 🟠\
+[*wbyK*](https://www.kegg.jp/entry/K13001) - LPS biosynthesis 🟠\
+[*SEPT4*](https://www.kegg.jp/entry/K16943) - involved in membrane trafficking exocytosis, as well as apoptosis (but eukaryotic, homolog?) 🟠\
+
+What matches our data? Well the adherence proteins I think reflects a bit what we see. **Especially the adherence proteins together with the biofilm-formation genes may explain the aggregation patterns observed in the microscopy.** An interesting note is the occurence of 5 phage genes in conjunction with two defense genes, suggesting that phage infection and defense is on-going in the TN-treatment as opposed to the C-treatment.\
+\
+The appearance of the flaggellin and curli-genes are in opposition to what we see in the microscopy, there are more structures of filaments in the C-treatment, however these genes appear upregulated in the TN-treatment, it might be that these genes are used in the cell-cell connections in some way, rather than moving around, but it needs confirmation that pili-genes can be involved in this rather than mobility alone.
+
+### The C-abundant genes
+
+Legend for maintenance associated activities
+
+🟣 - osmoregulation
+
+🔵 - ribosomal proteins and translation related genes
+
+This is still a work in progress...
+
+Here subunits of the F-type ATPase was more abundant:\
+[*ATPeF0A*](https://www.kegg.jp/entry/K02126), subunit a [*ATPF0A*](https://www.kegg.jp/entry/K02108), subunit a [*ATPF0B*](https://www.kegg.jp/entry/K02109), subunit b [*ATPeF0C*](https://www.kegg.jp/entry/K02128), subunit c
+
+one morphology gene upregulated in the C-treatment [*flgE*](https://www.kegg.jp/entry/K02390)
+
+Genes related to proline-metabolism, known to be important for osmoregulation were upregulated in the C-treatment
+
+[*proX*](https://www.kegg.jp/entry/K02002)🟣*\
+[proW](https://www.kegg.jp/entry/K02001)* 🟣\
+[*ompF*](https://www.kegg.jp/entry/K09476) an outer membrane protein defined as osmoregulatory 🟣
+
+Ribosome and translation processes:
+
+[*rplJ*](https://www.kegg.jp/entry/K02864) 🔵\
+
+[*RPL14*](https://www.kegg.jp/entry/K02875) 🔵\
+
+[*RPL15*](https://www.kegg.jp/entry/K02877) 🔵\
+
+[*rplX*](https://www.kegg.jp/entry/K02895) 🔵\
+
+[*rplC*](https://www.kegg.jp/entry/K02906) 🔵\
+
+[*rplE*](https://www.kegg.jp/entry/K02931) 🔵\
+
+[*rplL*](https://www.kegg.jp/entry/K02935) 🔵\
+
+[*rpsJ*](https://www.kegg.jp/entry/K02946) 🔵\
+
+[*rpsL*](https://www.kegg.jp/entry/K02950) 🔵\
+
+[*rpsO*](https://www.kegg.jp/entry/K02956) 🔵\
+
+[*rpsB*](https://www.kegg.jp/entry/K02967) 🔵\
+
+[*rpsG*](https://www.kegg.jp/entry/K02992) 🔵\
+
+[*EIF1A*](https://www.kegg.jp/entry/K03236) 🔵\
+
+[*EIF4A*](https://www.kegg.jp/entry/K03257) 🔵\
+
+[*EIF4E*](https://www.kegg.jp/entry/K03259) 🔵\
+
+[*EIF5*](https://www.kegg.jp/entry/K03262) 🔵\
+
+Thus we see several ribosome and translation genes statistically more abundant in the C-treatment. The pro-genes and porin are worth mentioning, but do not deserve more than a sentence as there are not so many genes involved in this pathway, perhaps if they have a large transcription in the C-treatment this will give validity.
+
+## Summary
+
+To recapitulate, morphological charateristics that were over-represented in the TN-treatment included Outer membrane blebbing and release of outer membrane vesicles, this was also true for the combination of connections between cells and blebbing (@fig-morphologies). The genes supporting what we see then includes the biofilm and adhesion genes that might help explain the bactteriall aggregation seen, there are allso three genes involved in LPS biosynthesis and exocytosis, which might explain the outer membrane vesicles seen in the TN-treatment. A sidenote is the presence of phage-genes being expressed, suggesting a top-down pressure by phages in the TN-treatment, and bacterial defense systems responding to this.\
+
+Genes and systems supporting the occurrence of OMV's in the TN-treatment include :
+
+The LPS and OMV's categories
+
+Quorom-sensing and chemotaxis
+
+The maintenance related activties in the C-treatment does not really get a large support, but three genes related to osmoregulation show up, and several ribosomal proteins pop-up, potentially reflecting cold adaptation.
+
+::: {#fig-morphologies layout="[[1], [1,1]]"}
+![morphSummary](../data2/morphology_summary.jpg){#fig-summary}
+
+![morphSlides1](../data2/Microscopy_slide1.jpg){#fig-morphslide1}
+
+![morphSlides2](../data2/morphology_slide2.jpg){#fig-morphslide2}
+
+Morphological traits
+:::
+
+# Figures based on above genelist
 
 ```{r}
-p1 <- bbmap_p %>%
+#| label: fig-DETPM
+#| fig-cap: "the most abundant weighted genes in each treatment."
+#| warning: false
+#| eval: false
+bbmap_p %>%
   inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
   filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
   group_by(orf, treatment) %>%
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  inner_join(eggnogs %>% distinct(orf, KEGG_ko), by = "orf") %>%
-  inner_join(edgeR_KO %>%
-    filter(type != "non-DE"), 
-    by = "KEGG_ko") %>%
-  group_by(KEGG_ko, treatment, type) %>%
+  inner_join(kofamscan, by = "orf") %>% #Adding the kO-terms and summarising tpm per treatment and KO-term
+  group_by(treatment, KEGG_ko) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  inner_join(rbind(koDownLegend, koUpLegend), by = "KEGG_ko") %>%
+  mutate(gene = forcats::as_factor(gene) %>% fct_reorder(tpm, .desc = TRUE)) %>%
+  group_by(treatment) %>% #Selecting top50 KO's per treatment
+  arrange(desc(tpm)) %>%
+  slice_head(n = 50) %>%
+  ungroup() %>%
+  ggplot(mapping = aes(x = gene, y = tpm)) +
+  geom_col() +
+  facet_wrap(~treatment, scales = "free") +
+  theme(axis.text.x = element_text(hjust = 1, angle = 90)) 
+```
+
+Plotting the most relevant genes based on change\*abundance, very few are involved in any of the interesting processes (@fig-weighted).
+
+```{r}
+#| label: fig-weighted
+#| fig-cap: "the most abundant weighted genes in each treatment."
+#| warning: false
+
+#Plotting the logCPM*logFC ordering version, as presented before, and adding annotation based on what activities the bugs are involved in
+#Adding annotation of known processes among the known genes
+
+
+
+
+edgeR_KO %>%
+  mutate(weighted = logFC*logCPM) %>%
+  inner_join(rbind(koDownLegend, koUpLegend), by = "KEGG_ko") %>% #Adding known annotations
+  arrange(desc(weighted)) %>%
+  slice(1:50, (nrow(.)-49):nrow(.)) %>% #selecting largest and lowest weighted values respectively
+  ungroup() %>% view()
+  
+```
+
+On the other hand we can see the distribution of the specified processes by plotting only the genes in processes of interest (@fig-process_weighted).
+
+```{r}
+#| label: fig-process_weighted
+#| fig-cap: "The abundance and change of the genes involved in relevant processes"
+#| warning: false
+
+aggregationGenes <- c("tadB","tadC","tadE","rpoS","glgA","csrA","bifA","mcp","ABC.SP.A") #Green colour
+
+LPSOMV <- c("waaJ, rfaJ","wbyK","SEPT4") #Orange colour
+
+osmoReg <- c("proX","proW","ompF") #Purple colour
+
+riboAndTransl <- c("RP-L10, MRPL10, rplJ","RP-L14e, RPL14","RP-L15e, RPL15","RP-L24, MRPL24, rplX","RP-L3, MRPL3, rplC","RP-L5, MRPL5, rplE","RP-L7, MRPL12, rplL","RP-S10, MRPS10, rpsJ","RP-S12, MRPS12, rpsL","RP-S15, MRPS15, rpsO","RP-S2, MRPS2, rpsB","RP-S7, MRPS7, rpsG","EIF1A","EIF4A","EIF4E","EIF5") # Blue colour
+
+edgeR_KO %>%
+  mutate(weighted = logFC*logCPM) %>%
+  inner_join(rbind(koDownLegend, koUpLegend), by = "KEGG_ko") %>% #Adding known annotations
+  arrange(desc(weighted)) %>%
+  #slice(1:50, (nrow(.)-49):nrow(.)) %>% #selecting largest and lowest weighted values respectively
+  ungroup() %>%
+  mutate(gene = forcats::as_factor(gene) %>% fct_reorder(logFC, .desc = TRUE)) %>%
+  mutate(process = case_when(
+    gene %in% aggregationGenes ~ "Aggregation",
+    gene %in% LPSOMV ~ "OMVs",
+    gene %in% osmoReg ~ "Osmoregulation",
+    gene %in% riboAndTransl ~ "Ribosome and translation",
+    TRUE ~ "None"
+  )) %>% 
+  filter(process != "None") %>%
+  ggplot(mapping = aes(y = gene, x= logFC, shape = process)) +
+  geom_point(aes(size = logCPM, colour = fdr)) +
+  scale_colour_viridis(discrete = FALSE) +
+  theme_minimal()  +
+  scale_shape_manual('Process', values = c(0,1,2,5))
+
+ggsave("../results/manualCats.png", bg = "white")
+```
+
+To see large-scale patterns, the [COG-categories](https://www.ncbi.nlm.nih.gov/research/cog#) were plotted to understand responses better (@fig-cogCats), the B-panel shoes the taxonomic contribution of all the statistically differentially abundant genes. The tpm values were average across samples and fraction to identify taxonomic fidelity of the functional categories. The taxonomic contribution overall showed a lot of taxa annotated only as bacteria, and a stronger presence of Archaea in the C-Treatment-enriched genes. The categories which show responses in the C-treatment are:\
+Translation, ribosomal structure and biogenesis\
+Energy production and conversion\
+RNA processing and modification\
+The TN-abundant genes did not have a clear categorical response, but was spread out across categories. Notable differences are the occurrence of Archaea and Flacobacteriia in the C-abundant and TN-abundant fractions respectively.
+
+```{r}
+#| label: fig-cogCats
+#| fig-cap: "The abundance and change of the genes involved in relevant processes.Dowen denotes genes significantly abundant in the C-treatment, uo denotes genes significanly more abundant in the TN-treatment."
+#| fig-subcap: 
+#|   - "tpm contribution of the DE-genes in each treatment and statistical group, per COG-category"
+#|   - "Taxonomic contribution to each category"
+#| warning: false
+#| layout-ncol: 1
+
+
+#Creating vectors for up and downregulated orfs.
+
+upReg <- kofamscan %>%
+  inner_join(edgeR_KO, by = "KEGG_ko") %>%
+  filter(type == "Up") %>%
+  pull(orf)
+
+downReg <- kofamscan %>%
+  inner_join(edgeR_KO, by = "KEGG_ko") %>%
+  filter(type == "Down") %>%
+  pull(orf)
+
+#Create ordering of tpm based on abundance
+
+SelCats <- c(cog_legend$full_name[1], cog_legend$full_name[17], cog_legend$full_name[2], cog_legend$full_name[9], cog_legend$full_name[10], cog_legend$full_name[14], cog_legend$full_name[18], cog_legend$full_name[19])
+
+
+
+#Start with large scale categories
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "Down",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
+  group_by(treatment, type, COG_category) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(COG_category != "-") %>%
+  #mutate(COG_category = forcats::as_factor(COG_category) %>% fct_reorder(tpm, .desc = FALSE)) %>%
+  inner_join(cog_legend, by = "COG_category") %>%
+ #mutate(full_name = forcats::as_factor(full_name) %>% fct_reorder(tpm, .desc = FALSE)) %>%
+  filter(full_name %in% SelCats) %>%
+  ggplot(mapping = aes(x = fct_relevel(full_name, rev(SelCats)), y = tpm, fill = type)) +
+  geom_col() +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::comma) +
+  ylab("transcripts per million (tpm)") +
+  theme(legend.title = element_text(face = "bold")) +
+  scale_fill_discrete('Type') +
+  xlab("COG category") +
+  coord_flip() +
+  facet_wrap(~ treatment)
+
+ggsave("../results/COG_cats.tiff", bg = "white", width = 18, height = 12, unit = "cm")
+  
+
+  #Taxonomic contribution of COG-categories
+    #Deciding the top 10 taxonomies
+
+top10 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "Down",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
+  filter(COG_category != "-") %>%
+  inner_join(cog_legend, by = "COG_category") %>%
+  filter(full_name %in% SelCats) %>%
+  inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
+  inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
+  mutate(class = na_if(class, "no support"),
+         phylum = na_if(phylum, "no support")) %>%
+  mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
+  group_by(taxa_group) %>%
   summarise(tpm = sum(tpm)) %>%
   ungroup() %>%
   arrange(desc(tpm)) %>%
-  slice(1:100) %>%
-  ggplot(mapping = aes(x = KEGG_ko, y = tpm, fill = type)) +
-  geom_col() +
-  facet_wrap(~ treatment) +
-  theme(axis.text.x = element_text(hjust = 1, angle = 90))
+  slice(1:10) %>%
+  pull(taxa_group)
 
-ggplotly(p1)
+
+
+#Fix the order of categories to match the above plot 
+
+levelVec <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "Down",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
+  group_by(treatment, type, COG_category) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(COG_category != "-") %>%
+  mutate(COG_category = forcats::as_factor(COG_category) %>% fct_reorder(tpm, .desc = FALSE)) %>%
+  pull(COG_category) %>%
+  levels()
+
+# Adding taxonomy to plot in each category and DE-fraction
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "Down",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
+  inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
+  inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
+  mutate(class = na_if(class, "no support"),
+         phylum = na_if(phylum, "no support")) %>% #Repacing the no support wth NA
+  mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
+  mutate(taxa_group = ifelse(taxa_group %in% top10, paste0(taxa_group), paste0("Other"))) %>%
+  group_by(type, COG_category, taxa_group) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(COG_category != "-") %>%
+  mutate(COG_category = factor(COG_category, levels = levelVec)) %>%
+  group_by(type, COG_category) %>%
+  mutate(relab = tpm/sum(tpm)) %>%
+  ungroup() %>%
+  inner_join(cog_legend, by = "COG_category") %>%
+  filter(full_name %in% SelCats) %>%
+  ggplot(mapping = aes(x = fct_relevel(full_name, rev(SelCats)), y = relab, fill = fct_relevel(taxa_group, "Other", after = Inf))) +
+  geom_col() +
+  theme_minimal() +
+  xlab("COG category") +
+  ylab("Relative abundance") +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7)) +
+  coord_flip() +
+  facet_wrap(~ type) +
+  guides(fill=guide_legend(ncol=2)) +
+  scale_fill_manual('Taxonomic group', values = GEOM_COL_COLOURS) 
+
+ggsave("../results/COG_cats_taxpnomy.png", bg = "white")
 ```
+
