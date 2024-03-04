@@ -25,6 +25,8 @@ GEOM_COL_COLOURS = c(
   RColorBrewer::brewer.pal(12, name = 'Paired'))
 
 GEOM_COL_COLOURS1 = c(GEOM_COL_COLOURS, "#D3D3D3")
+
+TREAT_COLOURS <- c("blue","yellow4")
 ```
 
 ```{r}
@@ -90,7 +92,7 @@ rm_values <- read_tsv("../data/Rm_values.tsv")
 
 gene_categories <- read_tsv("../data/gene_categories.tsv")
 
-kofamscan <- fread("../data2/kofamscan2.tsv.gz", sep = "\t" ) %>%# A few KO-terms have several hits, to remove this issue these are annotated as ambiguous instead, to keep information but remove row duplications
+kofamscan <- fread("../data2/kofamscan2.tsv.gz", sep = "\t" ) %>%
 rename(orf = "gene name",
        KEGG_ko = "KO",
        evalue = 6) %>%
@@ -98,20 +100,28 @@ rename(orf = "gene name",
   group_by(orf) %>%
   slice_max(order_by = score, n = 1) %>%
   ungroup() %>%
-  group_by(orf) %>% #This grop_by selects best hit of all KO's based on evalue (only if similar bitscore)
+  group_by(orf) %>% #This group_by selects best hit of all KO's based on evalue (only if similar bitscore)
   slice_min(order_by = evalue, n = 1) %>%
   ungroup() %>%
-  group_by(orf) %>% #This grop_by selects best hit of all KO's based on treshold (only if similar bitscore)
+  group_by(orf) %>% #This group_by selects best hit of all KO's based on treshold (only if similar bitscore)
   slice(1) %>% # All duplicates are now removed
   ungroup() %>%
   select(-1)
 
 koUpLegend <- read_tsv("../data2/koTermsUpLegend.tsv", col_names = c("KEGG_ko","gene","Description")) 
+  
     
    
 koDownLegend <- read_tsv("../data2/koTermsDownLegend.tsv", col_names = c("KEGG_ko","gene","Description"))
 
 cog_legend <- read_tsv("../data2/COG_categories.tsv")
+
+#Merging up and down legend for supplementary table of up/down-genes
+
+UpDown <- rbind(koUpLegend %>% mutate(type = "Up"),
+      koDownLegend %>% mutate(type = "Down")) 
+  
+write_tsv(UpDown,"../results/up_down_genes.tsv")
 
 ```
 
@@ -201,9 +211,23 @@ edgeR_KO <- day17 %>%
 write_tsv(edgeR_KO, "../results/edgeR_KO.tsv")
 ```
 
+```{r}
+#Creating vectors for up and orfs part of the downregulated KO's.
+
+upReg <- kofamscan %>%
+  inner_join(edgeR_KO, by = "KEGG_ko") %>%
+  filter(type == "Up") %>%
+  pull(orf)
+
+downReg <- kofamscan %>%
+  inner_join(edgeR_KO, by = "KEGG_ko") %>%
+  filter(type == "Down") %>%
+  pull(orf)
+```
+
 ## General results and the target genes
 
-The analysis revealed 165 genes more abundant in the TN-treatment, and 178 more abundant in the C-treatment (@tbl-overview). As you soon will see, the amount of genes in the target gene list were so few, that they were included in the large scale analysis instead, but are still presented here for you to see. The section summarising the expressino results is the section called "The rest of the DE-genes".
+The analysis revealed 165 genes more abundant in the TN-treatment, and 178 more abundant in the C-treatment (@tbl-overview). As you soon will see, the amount of genes in the target gene list were so few, that they were included in the large scale analysis instead, but are still presented here for you to see. The section summarising the expression results is the section called "The rest of the DE-genes".
 
 ```{r}
 #| label: tbl-overview
@@ -287,7 +311,43 @@ The genes abundant in the C-treatment included 6 genes from the target gene list
 
 ## The rest of the DE-genes
 
-### The TN-abundant genes
+### Calculating tpm of DE-genes in respective treatment
+```{r}
+
+#Calculating tpm in C treatment for C-abundant genes
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  filter(type == "C-DE" & treatment == "C") %>%
+  group_by(treatment) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup()
+
+
+#Calculating tpm in TN treatment for TN-abundant genes
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  filter(type == "TN-DE" & treatment == "TN") %>%
+  group_by(treatment) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup()
+```
+
+
+### The differentially abundant genes
 
 Here I employ a legend to relate the genes to the morphological charateristics
 
@@ -468,8 +528,6 @@ Plotting the most relevant genes based on change\*abundance, very few are involv
 #Adding annotation of known processes among the known genes
 
 
-
-
 edgeR_KO %>%
   mutate(weighted = logFC*logCPM) %>%
   inner_join(rbind(koDownLegend, koUpLegend), by = "KEGG_ko") %>% #Adding known annotations
@@ -494,6 +552,19 @@ osmoReg <- c("proX","proW","ompF") #Purple colour
 
 riboAndTransl <- c("RP-L10, MRPL10, rplJ","RP-L14e, RPL14","RP-L15e, RPL15","RP-L24, MRPL24, rplX","RP-L3, MRPL3, rplC","RP-L5, MRPL5, rplE","RP-L7, MRPL12, rplL","RP-S10, MRPS10, rpsJ","RP-S12, MRPS12, rpsL","RP-S15, MRPS15, rpsO","RP-S2, MRPS2, rpsB","RP-S7, MRPS7, rpsG","EIF1A","EIF4A","EIF4E","EIF5") # Blue colour
 
+ViralDef <- c("hsdR")
+
+ATPSynthase <- c("ATPeF0C, ATP5G, ATP9","ATPeF0A, MTATP6, ATP6","ATPF0A, atpB","ATPF0B, atpF")
+
+Motility <- c("fliD","fliC, hag")
+
+MacroMoc <- c("phaC, phbC")
+
+
+Oxido <- c("katG","fpr","qor, CRYZ")
+
+shapeVec <- c(0, 1, 2, 4, 5, 6, 15, 16, 17, 18)
+
 edgeR_KO %>%
   mutate(weighted = logFC*logCPM) %>%
   inner_join(rbind(koDownLegend, koUpLegend), by = "KEGG_ko") %>% #Adding known annotations
@@ -502,10 +573,15 @@ edgeR_KO %>%
   ungroup() %>%
   mutate(gene = forcats::as_factor(gene) %>% fct_reorder(logFC, .desc = TRUE)) %>%
   mutate(process = case_when(
-    gene %in% aggregationGenes ~ "Aggregation",
-    gene %in% LPSOMV ~ "OMVs",
+    gene %in% aggregationGenes ~ "Aggregation & cell-cell connections",
+    gene %in% LPSOMV ~ "Membrane vesicles",
     gene %in% osmoReg ~ "Osmoregulation",
     gene %in% riboAndTransl ~ "Ribosome and translation",
+    gene %in% ViralDef ~ "Viral defense",
+    gene %in% ATPSynthase ~ "ATP synthase",
+    gene %in% Motility ~ "Motility",
+    gene %in% MacroMoc ~ "Macromolecular turnover",
+    gene %in% Oxido ~ "Oxidoreductase",
     TRUE ~ "None"
   )) %>% 
   filter(process != "None") %>%
@@ -513,16 +589,19 @@ edgeR_KO %>%
   geom_point(aes(size = logCPM, colour = fdr)) +
   scale_colour_viridis(discrete = FALSE) +
   theme_minimal()  +
-  scale_shape_manual('Process', values = c(0,1,2,5))
+  scale_shape_manual('Process', values = shapeVec)
 
-ggsave("../results/manualCats.png", bg = "white")
+ggsave("../results/manualCats.pdf", bg = "white")
+
+ggsave("../results/manualCats.tiff",dpi = 330, bg = "white")
 ```
+
 
 To see large-scale patterns, the [COG-categories](https://www.ncbi.nlm.nih.gov/research/cog#) were plotted to understand responses better (@fig-cogCats), the B-panel shoes the taxonomic contribution of all the statistically differentially abundant genes. The tpm values were average across samples and fraction to identify taxonomic fidelity of the functional categories. The taxonomic contribution overall showed a lot of taxa annotated only as bacteria, and a stronger presence of Archaea in the C-Treatment-enriched genes. The categories which show responses in the C-treatment are:\
 Translation, ribosomal structure and biogenesis\
 Energy production and conversion\
 RNA processing and modification\
-The TN-abundant genes did not have a clear categorical response, but was spread out across categories. Notable differences are the occurrence of Archaea and Flacobacteriia in the C-abundant and TN-abundant fractions respectively.
+
 
 ```{r}
 #| label: fig-cogCats
@@ -534,23 +613,9 @@ The TN-abundant genes did not have a clear categorical response, but was spread 
 #| layout-ncol: 1
 
 
-#Creating vectors for up and downregulated orfs.
-
-upReg <- kofamscan %>%
-  inner_join(edgeR_KO, by = "KEGG_ko") %>%
-  filter(type == "Up") %>%
-  pull(orf)
-
-downReg <- kofamscan %>%
-  inner_join(edgeR_KO, by = "KEGG_ko") %>%
-  filter(type == "Down") %>%
-  pull(orf)
-
 #Create ordering of tpm based on abundance
 
 SelCats <- c(cog_legend$full_name[1], cog_legend$full_name[17], cog_legend$full_name[2], cog_legend$full_name[9], cog_legend$full_name[10], cog_legend$full_name[14], cog_legend$full_name[18], cog_legend$full_name[19])
-
-
 
 #Start with large scale categories
 bbmap_p %>%
@@ -559,11 +624,11 @@ bbmap_p %>%
   group_by(orf, treatment) %>%
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "Down",
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
                           TRUE ~ "non-DE")) %>%
   inner_join(eggnogs, by = "orf") %>%
-  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
+  separate_rows(COG_category, sep = '(?<=.)(?=.)') %>% #Dealing with multiple category assignments
   group_by(treatment, type, COG_category) %>%
   summarise(tpm = sum(tpm)) %>%
   ungroup() %>%
@@ -576,14 +641,16 @@ bbmap_p %>%
   geom_col() +
   theme_minimal() +
   scale_y_continuous(labels = scales::comma) +
-  ylab("transcripts per million (tpm)") +
+  ylab("Transcripts per million") +
   theme(legend.title = element_text(face = "bold")) +
-  scale_fill_discrete('Type') +
+  scale_fill_manual('Type', values = c("C-DE" = TREAT_COLOURS[1],"TN-DE" = TREAT_COLOURS[2], "non-DE" = "grey68")) +
   xlab("COG category") +
   coord_flip() +
   facet_wrap(~ treatment)
 
-ggsave("../results/COG_cats.tiff", bg = "white", width = 18, height = 12, unit = "cm")
+ggsave("../results/COG_cats.pdf", bg = "white", width = 18, height = 12, unit = "cm")
+ggsave("../results/COG_cats.tiff", bg = "white", width = 18, height = 12, units = "cm", 
+       dpi = 330)
   
 
   #Taxonomic contribution of COG-categories
@@ -595,8 +662,8 @@ top10 <- bbmap_p %>%
   group_by(orf) %>%
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "Down",
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
                           TRUE ~ "non-DE")) %>%
   inner_join(eggnogs, by = "orf") %>%
   separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
@@ -615,8 +682,6 @@ top10 <- bbmap_p %>%
   slice(1:10) %>%
   pull(taxa_group)
 
-
-
 #Fix the order of categories to match the above plot 
 
 levelVec <- bbmap_p %>%
@@ -625,8 +690,8 @@ levelVec <- bbmap_p %>%
   group_by(orf, treatment) %>%
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "Down",
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
                           TRUE ~ "non-DE")) %>%
   inner_join(eggnogs, by = "orf") %>%
   separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
@@ -638,24 +703,28 @@ levelVec <- bbmap_p %>%
   pull(COG_category) %>%
   levels()
 
-# Adding taxonomy to plot in each category and DE-fraction
+# Adding taxonomy to plot in each category and DE-fraction #mutate in the prefix for each taxonomic level.
 bbmap_p %>%
   inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
   filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
   group_by(orf) %>% #mean tpm regardless of treatment
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "Up", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "Down",
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
                           TRUE ~ "non-DE")) %>%
   inner_join(eggnogs, by = "orf") %>%
   separate_rows(COG_category, sep = '(?<=.)(?=.)') %>%
   inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
   inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
   mutate(class = na_if(class, "no support"),
-         phylum = na_if(phylum, "no support")) %>% #Repacing the no support wth NA
+         phylum = na_if(phylum, "no support")) %>% #Replacing the no support wth NA
   mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
   mutate(taxa_group = ifelse(taxa_group %in% top10, paste0(taxa_group), paste0("Other"))) %>%
+  mutate(taxa_group = case_when(taxa_group == superkingdom ~ paste0("d_",taxa_group),
+                                 taxa_group == phylum ~ paste0("p_",taxa_group),
+                                 taxa_group == class ~ paste0("c_", taxa_group),
+                                 TRUE ~ paste0(taxa_group))) %>% 
   group_by(type, COG_category, taxa_group) %>%
   summarise(tpm = sum(tpm)) %>%
   ungroup() %>%
@@ -671,12 +740,14 @@ bbmap_p %>%
   theme_minimal() +
   xlab("COG category") +
   ylab("Relative abundance") +
-  theme(legend.position = "bottom", axis.text = element_text(size = 7)) +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold")) +
   coord_flip() +
-  facet_wrap(~ type) +
-  guides(fill=guide_legend(ncol=2)) +
-  scale_fill_manual('Taxonomic group', values = GEOM_COL_COLOURS) 
+  facet_grid(~ type) +
+  guides(fill=guide_legend(ncol=2, title.position = "top")) +
+  scale_fill_manual('Taxonomic group', values = GEOM_COL_COLOURS) +
+  scale_y_continuous(labels=c(0,0.25,0.50,0.75,1))
 
-ggsave("../results/COG_cats_taxpnomy.png", bg = "white")
+ggsave("../results/COG_cats_taxonomy.tiff", bg = "white", width = 18, height = 12, units = "cm", dpi = 330)
 ```
 
