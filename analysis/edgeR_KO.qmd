@@ -27,6 +27,46 @@ GEOM_COL_COLOURS = c(
 GEOM_COL_COLOURS1 = c(GEOM_COL_COLOURS, "#D3D3D3")
 
 TREAT_COLOURS <- c("blue","yellow4")
+
+Order_colours <- c("Alphaproteobacteria uncl." = "#A6CEE3",
+                   "B26-1" = "#1F78B4",
+                   "Baldrarchaeales" = "khaki2",
+                   "Burkholderiales" = "#B2DF8A",
+                   "Caulobacterales" = "orchid1",
+                   "CR-4" = "blue1"  ,
+                   "Enterobacterales" = "#33A02C",
+                   "Flavobacteriales" = "#FB9A99",
+                   "Helarchaeales" = "green1"  ,
+                   "Nitrososphaerales" = "black" ,
+                   "Parvibaculales" = "#E31A1C",
+                   "Pelagibacterales" = "deeppink1" ,
+                   "Poseidoniales" = "#FDBF6F",
+                   "Pseudomonadales" = "#FF7F00",
+                   "Rhodobacterales" = "#CAB2D6",
+                   "Syntrophorhabdales" = "#6A3D9A",
+                   "Other" = "#D3D3D3"
+                   )
+
+
+Phylum_colours <- c(" Asgardarchaeota" = "#A6CEE3",
+                    " Bacteroidota" = "#1F78B4",
+                    " Campylobacterota" = "khaki2" ,
+                    " Chloroflexota" = "#B2DF8A",
+                    " Cyanobacteria" = "orchid1",
+                    " Firmicutes" = "blue1",
+                    " Patescibacteria" = "#33A02C",
+                    " Proteobacteria" = "#FB9A99",
+                    " Thermoproteota" = "green1",
+                    "Archaea uncl." = "black",
+                    " Actinobacteriota" = "#E31A1C",
+                    " Desulfobacterota_G" = "deeppink1",
+                    " Nanoarchaeota" = "#FDBF6F",
+                    " Planctomycetota" = "#FF7F00",
+                    " Thermoplasmatota" = "#CAB2D6",
+                    " Verrucomicrobiota" = "#6A3D9A",
+                    "Other" = "#D3D3D3"
+                    
+                    )
 ```
 
 ```{r}
@@ -68,20 +108,6 @@ target_genes <- read_tsv("../data/list_of_genes.tsv")
 eggnogs <- read_tsv("../data2/all_samples.emapper.annotations.tsv", comment = "#")  %>%
   rename(orf = "query") 
 
-  
-
-#Reading in taxonomic annotation of reads
-taxonomy <- read_tsv("../data2/out.CAT.contig2classification.names.txt.gz") %>%
-  rename(chr = "# contig") %>%
-  mutate(superkingdom = gsub(":.*","",superkingdom),
-         phylum = gsub(":.*","",phylum),
-         class = gsub(":.*","",class),
-         order = gsub(":.*","",order),
-         family = gsub(":.*","",family),
-         genus = gsub(":.*","",genus),
-         species = gsub(":.*","",species),
-         )
-
 
 #Count file for all orfs, tpm is calculated per sample
 bbmap <- fread("../data2/counts.tsv.gz", sep = "\t") %>%
@@ -100,38 +126,87 @@ rename(orf = "gene name",
   group_by(orf) %>%
   slice_max(order_by = score, n = 1) %>%
   ungroup() %>%
-  group_by(orf) %>% #This group_by selects best hit of all KO's based on evalue (only if similar bitscore)
+  group_by(orf) %>% #This group_by selects best hit of all KO's based on evalue (only if similar evalue)
   slice_min(order_by = evalue, n = 1) %>%
   ungroup() %>%
-  group_by(orf) %>% #This group_by selects best hit of all KO's based on treshold (only if similar bitscore)
+  group_by(orf) %>% 
   slice(1) %>% # All duplicates are now removed
   ungroup() %>%
   select(-1)
 
-koUpLegend <- read_tsv("../data2/koTermsUpLegend.tsv", col_names = c("KEGG_ko","gene","Description")) 
-  
-    
-   
-koDownLegend <- read_tsv("../data2/koTermsDownLegend.tsv", col_names = c("KEGG_ko","gene","Description"))
-
 cog_legend <- read_tsv("../data2/COG_categories.tsv")
+
+pathway_key <- read_tsv("../data/new_pathways.tsv") %>%
+  rename(KEGG_Pathway = "identifier") %>%
+  rbind(c(KEGG_Pathway = "-", pathway = "No entry"))
+
+##Reading in the gtdb taxonomy
+
+taxonomy <- read_tsv("../data2/prokka-estimated-taxonomy.out") %>%
+  select(-1) %>%
+  rename(orf = transcript_name) %>%
+  group_by(orf) %>%
+  filter(max_pid == max(max_pid)) %>%
+  ungroup() %>%
+  separate(
+    full_classification,
+    c("domain", "phylum", "class", "order", "family", "genus", "species"),
+    sep = ";"
+  ) %>%
+  mutate(
+    domain  = ifelse(is.na(domain)  | domain  == '', 'Uncl.', domain),
+    phylum   = ifelse(is.na(phylum)   | phylum   == '', sprintf("%s uncl.", domain), phylum),
+    class   = ifelse(is.na(class)   | class   == '', sprintf("%s uncl.", phylum), class),
+    order   = ifelse(is.na(order)   | order   == '', sprintf("%s uncl.", class),  order),
+    family  = ifelse(is.na(family)  | family  == '', sprintf("%s uncl.", order),  family),
+    genus   = ifelse(is.na(genus)   | genus   == '', sprintf("%s uncl.", family), genus),
+    species = ifelse(is.na(species) | species == '', sprintf("%s uncl.", genus),  species)
+  ) %>%
+  mutate(order = sub(" ", "", order))# %>%
+  # mutate(phylum  = sub(" ", "", phylum))
+
+
+#Loading in KO-term annotatation from kegg.jp
+koUpLegend <- read_tsv("../data2/koTermsUpLegend.tsv", col_names = c("KO_term")) %>%
+  separate(KO_term, c("KEGG_ko","gene"), sep = 9) %>%
+  separate(gene, c("gene", "text_description"), sep = ";") %>%
+  mutate(KEGG_ko = gsub("ko:","", KEGG_ko)) %>%
+  mutate(gene = gsub(" ", "", gene))
+
+koDownLegend <- read_tsv("../data2/koTermsDownLegend.tsv", col_names = c("KO_term")) %>%
+  separate(KO_term, c("KEGG_ko","gene"), sep = 9) %>%
+  separate(gene, c("gene", "text_description"), sep = ";") %>%
+  mutate(KEGG_ko = gsub("ko:","", KEGG_ko)) %>%
+  mutate(gene = gsub(" ", "", gene))
+
+#KoNonDELegend <- read_tsv(##3) 
+
 
 #Merging up and down legend for supplementary table of up/down-genes
 
 UpDown <- rbind(koUpLegend %>% mutate(type = "Up"),
       koDownLegend %>% mutate(type = "Down")) 
+
+nonDE_legend <- read_tsv("../data2/nonDE_legend.tsv", col_names = c("KO_term")) %>%
+  separate(KO_term, c("KEGG_ko","gene"), sep = 9) %>%
+  separate(gene, c("gene", "text_description"), sep = ";") %>%
+  mutate(KEGG_ko = gsub("ko:","", KEGG_ko)) %>%
+  mutate(gene = gsub(" ", "", gene)) %>%
+  filter(!is.na(text_description))
+
+write_tsv(nonDE_legend,"../results/non-DE_genes.tsv")
   
 write_tsv(UpDown,"../results/up_down_genes.tsv")
-
 ```
 
 ```{r}
 #| cache: true
 #| warning: false
+
 #Removing non-prokreads as well as recalculating tpm over prok frac.
 bbmap_p <- bbmap %>% 
-  semi_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), 
-            by = "chr") %>%
+  semi_join(taxonomy %>% filter(domain %in% c("Bacteria", "Archaea")), 
+            by = "orf") %>%
   dplyr::select(-tpm) %>%
    group_by(sample) %>%
             mutate(t = count/length) %>%
@@ -148,15 +223,16 @@ EdgeR-analysis of the day 17 TN vs C-treatment on using the KO-system [annotatio
 #| warning: false
 #| cache: true
 
-design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2,3,3,3,4,4,4)))
-colnames(design) <- c("warm_control","cold_control","cold_nutrient","warm_nutrient")
+design <- model.matrix(~ 0 + factor(c(1,1,1,2,2,2)))
+colnames(design) <- c("cold_control","warm_nutrient")
 
 #Creating sample vector with library sizes to feed into normalization.
 libSizes <- bbmap_p %>%
+  semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
+  semi_join(sample_ID %>% filter(treatment %in% c("TN","C")), by = "sample") %>%
   group_by(orf) %>%
   filter(sum(count) >= MIN_COUNT, n() >= MIN_SAMPLE) %>%
   ungroup() %>%
-  semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
   select(sample, orf, count) %>%
   spread(sample, count, fill = 0) %>%
   column_to_rownames("orf") %>%
@@ -165,10 +241,11 @@ libSizes <- bbmap_p %>%
   
 #Creating DGElist
 dgelist <- bbmap_p %>%
-  group_by(orf) %>%
-  filter(sum(count) >= MIN_COUNT, n() >= MIN_SAMPLE) %>%
-  ungroup() %>%
   semi_join(sample_ID %>% filter(day == '17'), by = 'sample') %>%
+  semi_join(sample_ID %>% filter(treatment %in% c("TN","C")), by = "sample") %>%
+  group_by(orf) %>%
+  filter(sum(count) >= MIN_COUNT & n() >= MIN_SAMPLE) %>%
+  ungroup() %>%
   inner_join(kofamscan %>% select(orf, KEGG_ko), by = 'orf') %>%
   group_by(KEGG_ko, sample) %>%
   summarise(count = sum(count), .groups = 'drop') %>%
@@ -176,7 +253,7 @@ dgelist <- bbmap_p %>%
   pivot_wider(names_from = sample, values_from = count, values_fill = 0) %>%
   as.data.frame() %>%
   tibble::column_to_rownames('KEGG_ko') %>%
-  DGEList(lib.size = libSizes) %>% #This is where the libSizes need to be specified.
+  DGEList(lib.size = libSizes) %>% #This is where the libSizes need to be specified. 
   calcNormFactors() %>%
   estimateDisp(design) %>%
   glmQLFit(design, robust = TRUE)
@@ -212,6 +289,7 @@ write_tsv(edgeR_KO, "../results/edgeR_KO.tsv")
 ```
 
 ```{r}
+edgeR_KO <- read_tsv("../results/edgeR_KO.tsv")
 #Creating vectors for up and orfs part of the downregulated KO's.
 
 upReg <- kofamscan %>%
@@ -242,6 +320,7 @@ kable(edgeR_KO %>%
   rename("No. of genes" = "n")) %>%
   kable_styling(bootstrap_options = c("striped", "hover"))
 
+#This is used to load into kegg webpage to get information on the terms
 edgeR_KO %>% 
   filter(type == "Up") %>%
   mutate(gene = paste0("gene",row_number())) %>%
@@ -265,6 +344,40 @@ edgeR_KO %>%
 ```
 
 ```{r}
+edgeR_KO %>% 
+  filter(type == "non-DE") %>%
+  select(KEGG_ko) %>%
+  write_tsv("../data2/non_DE_KOterms.tsv")
+```
+
+
+#Looking at annotation coverage with COG and KEGG
+
+```{r}
+hmm <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf")
+
+
+hmm %>%
+  distinct(orf, KEGG_Pathway) %>%
+  filter(KEGG_Pathway != "-") %>%
+  nrow() #3422 annotated
+
+hmm %>%
+  distinct(orf, COG_category) %>%
+  filter(COG_category != "-") %>%
+  nrow() #7248 annotated
+```
+
+```{r}
 #| label: fig-volcano
 #| warning: false
 #| eval: false
@@ -275,6 +388,7 @@ edgeR_KO %>%
   scale_colour_manual(values = c("Down" = "Blue","Up" = "Red", "non-DE" = "Black")) +
   theme_minimal() 
 ```
+
 
 Among the target-gene list, only 2 genes were statistically upregulated in the TN-treatment (@tbl-Up). Thus from here we employ a different approach to identify patterns connected to morphology, summarising the overall patterns seen using the KO-terms. But first we inspect the downregulated genes below.
 
@@ -309,22 +423,29 @@ The genes abundant in the C-treatment included 6 genes from the target gene list
    kable_styling(bootstrap_options = c("striped", "hover"))
 ```
 
+```{r}
+#Creating a list containing all the DE-target genes 
+edgeR_KO %>%
+  filter(type %in% c("Down","Up")) %>%
+  inner_join(rbind(koDownLegend,koUpLegend) %>% separate_rows(gene, sep = ","), by = "KEGG_ko") %>% # Removing several gene-namesin one row
+  inner_join(target_genes, by = "gene") %>%
+  write_tsv("../results/DE_target_genes.tsv")
+```
+
 ## The rest of the DE-genes
 
-### Calculating tpm of DE-genes in respective treatment
+### Calculating tpm of DE-genes in respective treatment 
+
 ```{r}
 
 #Calculating tpm in C treatment for C-abundant genes
 bbmap_p %>%
   inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
-  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  filter(orf %in% downReg) %>%
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
   group_by(orf, treatment) %>% #mean tpm regardless of treatment
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "C-DE",
-                          TRUE ~ "non-DE")) %>%
-  filter(type == "C-DE" & treatment == "C") %>%
   group_by(treatment) %>%
   summarise(tpm = sum(tpm)) %>%
   ungroup()
@@ -333,17 +454,404 @@ bbmap_p %>%
 #Calculating tpm in TN treatment for TN-abundant genes
 bbmap_p %>%
   inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
-  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  filter(orf %in% upReg) %>%
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
   group_by(orf, treatment) %>% #mean tpm regardless of treatment
   summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
   ungroup() %>%
-  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
-                          orf %in% downReg ~ "C-DE",
-                          TRUE ~ "non-DE")) %>%
-  filter(type == "TN-DE" & treatment == "TN") %>%
   group_by(treatment) %>%
   summarise(tpm = sum(tpm)) %>%
   ungroup()
+```
+
+### Calculating the tpm and adding taxonomy and pathway information of DE-genes in each treatment
+
+```{r}
+#| label: pathway level 2 summary vectors
+#Summarising the larger KEGG categories accordign to their structure in https://www.genome.jp/kegg/pathway.html I did leave out the 1.0 category global and overview maps, as it is so wide, and obscures the rest of the patterns due to high tpm values of uninformative processes
+
+#Global_and_overview_maps <- c("01100","01110","01120","01200","01210","01212","01230","01232","01250","01240","01220")
+
+Carbohydrate_metabolism <- c("00010","00020","00030","00040","00051","00052","00053","00500","00520","00620","00630","00640","00650","00660","00562")
+
+Energy_metabolism <- c("00190","00195","00196","00710","00720","00680","00910","00920")
+
+Lipid_metabolism <- c("00061","00062","00071","00072","00073","00100","00120","00121","00140","00561","00564","00565","00600","00590","00591","00592","01040")
+
+Nucleotide_metabolism <- c("00230", "00240") 
+
+Amino_acid_metabolism<- c("00250","00260","00270","00280","00290","00300","00310","00220","00330","00340","00350","00360","00380","00400")
+
+Metabolism_of_other_amino_acids<- c("00410","00430","00440","00450","00460","00471","00472","00473","00480")
+
+Glycan_biosynthesis_and_metabolism <- c("00510","00513","00512","00515","00514","00532","00534","00533","00531","00563","00601","00603","00604","00540","00541","00550","00511","00571","00572")
+
+Metabolism_of_cofactors_and_vitamins<- c("00730","00740","00750","00760","00770","00780","00785","00790","00670","00830","00860","00130")
+
+Metabolism_of_terpenoids_and_polyketides<- c("00900","00902","00909","00904","00906","00905","00981","00908","00903","00281","01052","00522","01051","01059","01056","01057","00253","00523","01054","01053","01055")
+
+Biosynthesis_of_other_secondary_metabolites <- c("00940","00945","00941","00944","00942","00943","00901","00403","00950","00960","01058","00232","00965","00966","00402","00311","00332","00261","00331","00521","00524","00525","00401","00404","00405","00333","00254","00999","00998","00997")
+
+Xenobiotics_biodegradation_and_metabolism <- c("00362","00627","00364","00625","00361","00623","00622","00633","00642","00643","00791","00930","00363","00621","00626","00624","00365","00984","00980","00982","00983")
+
+Chemical_structure_transformation_maps <- c("01010","01060","01061","01062","01063","01064","01065","01066","01070")
+
+Transcription <- 
+  c("03020","03022", "03040")
+
+Translation <-
+  c("03010","00970","03013","03015","03008")
+ 
+Folding_sorting_and_degradation <-
+  c("03060","04141","04130","04120","04122","03050","03018")
+
+Replication_and_repair <- 
+  c("03030","03410","03420","03430","03440","03450","03460")
+
+ #This category is removed from the category-vector due to no hits at all among the DE-genes
+Information_processing_in_viruses <-
+   c("03230","03240","03250","03260","03262","03261","03263","03264","03265","03266","03268","03267")
+ 
+ Membrane_transport <-
+   c("02010","02060","03070")
+ 
+ Signal_transduction <- 
+   c("02020","04010","04013","04016","04011","04012","04014","04015","04310","04330","04340","04341","04350", "04390","04391","04392","04370","04371","04630","04064","04668","04066","04068","04020","04070","04072","04071","04024","04022","04151","04152","04150","04075")
+ 
+ Cellular_community_prokaryotes <-
+   c("02024","05111","02025","02026")
+ 
+ Cell_motility <-
+   c("02030","02040","04814","04810")
+ 
+ 
+
+categories <- c( "Carbohydrate_metabolism", "Energy_metabolism", "Lipid_metabolism", "Nucleotide_metabolism", "Amino_acid_metabolism", "Metabolism_of_other_amino_acids", "Glycan_biosynthesis_and_metabolism", "Metabolism_of_cofactors_and_vitamins", "Metabolism_of_terpenoids_and_polyketides", "Biosynthesis_of_other_secondary_metabolites", "Xenobiotics_biodegradation_and_metabolism", "Chemical_structure_transformation_maps", "Transcription","Translation","Folding_sorting_and_degradation","Replication_and_repair", "Membrane_transport","Signal_transduction","Cellular_community_prokaryotes","Cell_motility")
+```
+
+```{r}
+#Adding the larger level information
+orf_KEGG2_key <- eggnogs %>%
+  separate_rows(KEGG_Pathway, sep = ",") %>%
+  mutate(KEGG_Pathway = gsub("^[a-z]*", "", KEGG_Pathway)) %>%
+  distinct(orf, KEGG_Pathway) %>%
+  mutate(KEGG_level_2 = case_when(
+    #KEGG_Pathway %in% Global_and_overview_maps ~ "Global_and_overview_maps",
+    KEGG_Pathway %in% Carbohydrate_metabolism ~ "Carbohydrate metabolism",
+    KEGG_Pathway %in% Energy_metabolism ~ "Energy metabolism",
+    KEGG_Pathway %in% Lipid_metabolism ~ "Lipid metabolism",
+    KEGG_Pathway %in% Nucleotide_metabolism ~ "Nucleotide metabolism",
+    KEGG_Pathway %in% Amino_acid_metabolism ~ "Amino acid metabolism",
+    KEGG_Pathway %in% Metabolism_of_other_amino_acids ~ "Metabolism of other amino acids",
+    KEGG_Pathway %in% Glycan_biosynthesis_and_metabolism ~ "Glycan biosynthesis and metabolism",
+    KEGG_Pathway %in% Metabolism_of_cofactors_and_vitamins ~ "Metabolism of cofactors and vitamins",
+    KEGG_Pathway %in% Metabolism_of_terpenoids_and_polyketides ~ "Metabolism of terpenoids and polyketides",
+    KEGG_Pathway %in% Biosynthesis_of_other_secondary_metabolites ~ "Biosynthesis of other secondary metabolites",
+    KEGG_Pathway %in% Xenobiotics_biodegradation_and_metabolism ~ "Xenobiotics biodegradation and metabolism",
+    KEGG_Pathway %in% Chemical_structure_transformation_maps ~ "Chemical structure transformation maps",
+    KEGG_Pathway %in% Transcription ~ "Transcription",
+    KEGG_Pathway %in% Translation ~ "Translation",
+    KEGG_Pathway %in% Folding_sorting_and_degradation ~ "Folding sorting and degradation",
+    KEGG_Pathway %in% Replication_and_repair ~ "Replication and repair",
+    KEGG_Pathway %in% Information_processing_in_viruses ~ "Information processing in viruses",
+    KEGG_Pathway %in% Membrane_transport ~ "Membrane transport",
+    KEGG_Pathway %in% Signal_transduction ~ "Signal transduction", #Not adding a last line here gives all PW's not present NA's.
+    KEGG_Pathway %in% Cellular_community_prokaryotes ~ "Cellular community prokaryotes",
+    KEGG_Pathway %in% Cell_motility ~ "Cell motility"
+  ))
+```
+
+```{r}
+
+#Calculating most abundant orders in among the genes more abundant in the C-treatment
+top10_order <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>%
+  group_by(order) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(order)
+
+#Calculating most abundant KEGG2-pathways
+top10_paths2 <-  bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in pathway
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 != "NA") %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(KEGG_level_2)
+  
+
+#C-fraction
+p1 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>% #Join in larger pathway information
+  mutate(order = ifelse(order %in% top10_order, paste0(order), paste0("Other"))) %>%
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(treatment, order, KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 %in% top10_paths2) %>%
+  mutate(KEGG_level_2 = factor(KEGG_level_2, levels = rev(top10_paths2))) %>%
+  ggplot(mapping = aes(x = KEGG_level_2, y = tpm/10000, fill = order)) +
+  geom_col() +
+  scale_fill_manual('Order', values =  GEOM_COL_COLOURS1) +
+  theme_minimal() +
+  xlab("KEGG category") +
+  ylab(bquote('tpm x '(10^4))) +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold"),
+        legend.key.size = unit(0.2, "cm")) +
+  coord_flip() +
+ guides(fill=guide_legend(nrow = 6, title.position = "top")) +
+ scale_fill_manual('Order', values = Order_colours) +
+  labs(tag = "a") 
+
+p1
+```
+
+```{r}
+#Calculating most abundant orders in among the genes more abundant in the C-treatment
+top10_order <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>%
+  group_by(order) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(order)
+
+#Calculating most abundant KEGG2-pathways
+top10_paths2 <-  bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in pathway
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  filter(KEGG_level_2 != "NA") %>%
+  group_by(KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(KEGG_level_2)
+  
+
+#TN-fraction
+p2 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>% #Join in larger pathway information
+  mutate(order = ifelse(order %in% top10_order, paste0(order), paste0("Other"))) %>%
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(treatment, order, KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 %in% top10_paths2) %>%
+  mutate(KEGG_level_2 = factor(KEGG_level_2, levels = rev(top10_paths2))) %>%
+  ggplot(mapping = aes(x = KEGG_level_2, y = tpm/10000, fill = order)) +
+  geom_col() +
+  scale_fill_manual('Order', values = Order_colours) +
+  theme_minimal() +
+  xlab("") +
+  ylab(bquote('tpm x '(10^4))) +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold"),
+        legend.key.size = unit(0.2, "cm")) +
+  coord_flip() +
+  guides(fill=guide_legend(nrow = 6, title.position = "top")) +
+  labs(tag = "b")
+
+p2
+```
+
+```{r}
+## PLot combinatorics
+
+p1 + p2 + plot_layout(guides = "collect") & theme(legend.position = "bottom", legend.justification = "left")
+
+ggsave("../results/KEGG_DE_paths.tiff",  bg = "white", width = 18, height = 12, units = "cm", dpi = 330)
+```
+
+### Doing the phylum level version as requested
+```{r}
+#Calculating most abundant orders in among the genes more abundant in the C-treatment
+top10_phylum <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>%
+  group_by(phylum) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(phylum)
+
+#Calculating most abundant KEGG2-pathways
+top10_paths2 <-  bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in pathway
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 != "NA") %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(KEGG_level_2)
+  
+
+#C-fraction
+p1 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% downReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>% #Join in larger pathway information
+  mutate(phylum = ifelse(phylum %in% top10_phylum, paste0(phylum), paste0("Other"))) %>%
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(treatment, phylum, KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 %in% top10_paths2) %>%
+  mutate(KEGG_level_2 = factor(KEGG_level_2, levels = rev(top10_paths2))) %>%
+  ggplot(mapping = aes(x = KEGG_level_2, y = tpm/10000, fill = phylum)) +
+  geom_col() +
+  scale_fill_manual('Phylum', values =  GEOM_COL_COLOURS1) +
+  theme_minimal() +
+  xlab("KEGG category") +
+  ylab(bquote('tpm x '(10^4))) +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold"),
+        legend.key.size = unit(0.2, "cm")) +
+  coord_flip() +
+ guides(fill=guide_legend(nrow = 6, title.position = "top")) +
+ scale_fill_manual('Phylum', values = Phylum_colours) +
+  labs(tag = "a") 
+
+p1
+```
+
+```{r}
+#Calculating most abundant orders in among the genes more abundant in the TN-treatment
+top10_phylum <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>%
+  group_by(phylum) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(phylum)
+
+#Calculating most abundant KEGG2-pathways
+top10_paths2 <-  bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in pathway
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  filter(KEGG_level_2 != "NA") %>%
+  group_by(KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(KEGG_level_2)
+  
+
+#TN-fraction
+p2 <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(orf %in% upReg) %>% #Filtering out the genes statistically more abundant in the C-treatment
+  filter(treatment %in% c("TN")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>% #mean tpm regardless of treatment
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>% #Join in taxonomy
+  inner_join(taxonomy, by = "orf") %>% #Join in larger pathway information
+  mutate(phylum = ifelse(phylum %in% top10_phylum, paste0(phylum), paste0("Other"))) %>%
+  inner_join(orf_KEGG2_key, by = "orf") %>%
+  group_by(treatment, phylum, KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 %in% top10_paths2) %>%
+  mutate(KEGG_level_2 = factor(KEGG_level_2, levels = rev(top10_paths2))) %>%
+  ggplot(mapping = aes(x = KEGG_level_2, y = tpm/10000, fill = phylum)) +
+  geom_col() +
+ scale_fill_manual('Phylum', values = Phylum_colours) +
+  theme_minimal() +
+  xlab("") +
+  ylab(bquote('tpm x '(10^4))) +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold"),
+        legend.key.size = unit(0.2, "cm")) +
+  coord_flip() +
+  guides(fill=guide_legend(nrow = 6, title.position = "top")) +
+  labs(tag = "b")
+
+p2
+
+phyla_colours <- c(unique(p1$data$phylum),unique(p2$data$phylum))
+
+phyla_int <- unique(phyla_colours)
+```
+
+```{r}
+p1 + p2 + plot_layout(guides = "collect") & theme(legend.position = "bottom", legend.justification = "left")
+
+
+```
+```{r}
+ggsave("../results/KEGG_DE_paths_phylum.tiff",  bg = "white", width = 18, height = 12, units = "cm", dpi = 330)
 ```
 
 
@@ -585,6 +1093,7 @@ edgeR_KO %>%
     TRUE ~ "None"
   )) %>% 
   filter(process != "None") %>%
+  filter(type != "non-DE") %>%
   ggplot(mapping = aes(y = gene, x= logFC, shape = process)) +
   geom_point(aes(size = logCPM, colour = fdr)) +
   scale_colour_viridis(discrete = FALSE) +
@@ -595,13 +1104,67 @@ ggsave("../results/manualCats.pdf", bg = "white")
 
 ggsave("../results/manualCats.tiff",dpi = 330, bg = "white")
 ```
+## GoI Plot
+```{r}
+#Doing a new logFC pllot of genes of interest based on the new set of genes
 
+GoI <- read_tsv("../data2/GeneList_updated.tsv") %>%
+  mutate(Process = ifelse(Process == "signal transduction", paste0("Signal transduction"), paste0(Process)))
+
+scale25 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", "gold1",
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", "khaki2",
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+
+edgeR_KO %>%
+  mutate(weighted = logFC*logCPM) %>%
+  arrange(desc(weighted)) %>%
+  #slice(1:50, (nrow(.)-49):nrow(.)) %>% #selecting largest and lowest weighted values respectively
+  ungroup() %>%
+  inner_join(GoI %>% select(-type), by = "KEGG_ko") %>%
+  mutate(KO_gene = paste(KEGG_ko, gene_name, sep = "; ")) %>%
+  mutate(KO_gene = forcats::as_factor(KO_gene) %>% fct_reorder(logFC, .desc = TRUE)) %>%
+  rename(LogCPM = "logCPM") %>%
+  ggplot(mapping = aes(y = KO_gene, x= logFC,  colour = Process)) +
+  geom_point(aes(size = LogCPM)) +
+  #scale_colour_viridis(discrete = FALSE) +
+  theme_minimal()  +
+  scale_colour_manual('Process', values = scale25) +
+  ylab("Gene name") +
+  xlab(expression(Log["2"]~fold~change)) +
+  theme(legend.text = element_text(size = 9),
+        axis.text.x = element_text(size = 9))
+
+ggsave("../results/GoI.tiff", bg = "white", width = 18, height = 18, units = "cm", 
+       dpi = 330)
+```
+
+```{r}
+#enumerating the rest of the fli-genes
+edgeR_KO %>%
+  mutate(weighted = logFC*logCPM) %>%
+  inner_join(KoNonDELegend, by = "KEGG_ko") %>%
+  filter(str_detect(gene, "fli")) %>%
+  distinct(gene)
+```
+
+## Fig. COG-categories
 
 To see large-scale patterns, the [COG-categories](https://www.ncbi.nlm.nih.gov/research/cog#) were plotted to understand responses better (@fig-cogCats), the B-panel shoes the taxonomic contribution of all the statistically differentially abundant genes. The tpm values were average across samples and fraction to identify taxonomic fidelity of the functional categories. The taxonomic contribution overall showed a lot of taxa annotated only as bacteria, and a stronger presence of Archaea in the C-Treatment-enriched genes. The categories which show responses in the C-treatment are:\
 Translation, ribosomal structure and biogenesis\
 Energy production and conversion\
 RNA processing and modification\
-
 
 ```{r}
 #| label: fig-cogCats
@@ -749,5 +1312,198 @@ bbmap_p %>%
   scale_y_continuous(labels=c(0,0.25,0.50,0.75,1))
 
 ggsave("../results/COG_cats_taxonomy.tiff", bg = "white", width = 18, height = 12, units = "cm", dpi = 330)
+```
+
+## Fig KEGG-categories
+
+```{r}
+#Getting the most abundant annotated pathways 
+
+ #Taxonomic contribution of KEGG-categories
+    #Deciding the top 10 taxonomies
+
+topPathlevels <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+   filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = gsub('[a-z]*','', KEGG_Pathway)) %>% #Removing prefixes
+  separate_rows(KEGG_Pathway, sep = ',') %>% #Dealing with multiple category assignments
+  distinct(KEGG_Pathway, orf, type, tpm, treatment) %>%
+  group_by(type, KEGG_Pathway) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = forcats::as_factor(KEGG_Pathway) %>% fct_reorder(tpm, .desc = FALSE)) %>%
+ group_by(type) %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  ungroup()
+
+top10Tax <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = gsub('[a-z]*','', KEGG_Pathway)) %>% #Removing prefixes
+  separate_rows(KEGG_Pathway, sep = ',') %>% #Dealing with multiple category assignments
+  distinct(KEGG_Pathway, orf, type, tpm) %>% #Removing duplicates due to prefixes
+  inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
+  inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
+  mutate(class = na_if(class, "no support"),
+         phylum = na_if(phylum, "no support")) %>%
+  mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
+  group_by(taxa_group) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  pull(taxa_group)
+
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = gsub('[a-z]*','', KEGG_Pathway)) %>% #Removing prefixes
+  separate_rows(KEGG_Pathway, sep = ',') %>% #Dealing with multiple category assignments
+  distinct(treatment, KEGG_Pathway, orf, type, tpm) %>% #Removing duplicates due to prefixes
+  inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
+  inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
+ mutate(class = na_if(class, "no support"),
+         phylum = na_if(phylum, "no support")) %>% #Replacing the no support wth NA
+  mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
+  mutate(taxa_group = ifelse(taxa_group %in% top10Tax, paste0(taxa_group), paste0("Other"))) %>%
+  mutate(taxa_group = case_when(taxa_group == superkingdom ~ paste0("d_",taxa_group),
+                                 taxa_group == phylum ~ paste0("p_",taxa_group),
+                                 taxa_group == class ~ paste0("c_", taxa_group),
+                                 TRUE ~ paste0(taxa_group)))  %>%
+  group_by(type, KEGG_Pathway, taxa_group) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup()  
+  group_by(type, KEGG_Pathway) %>%
+  mutate(relab = tpm/sum(tpm)) %>%
+  ungroup() %>%
+  #filter(full_name %in% SelCats) %>%
+  #mutate(KEGG_Pathway = factor(KEGG_Pathway, levels = levelVec)) %>%
+  group_by(type, KEGG_Pathway) %>%
+  mutate(relab = tpm/sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_Pathway %in% unique(topPathlevels$KEGG_Pathway)) %>%
+  left_join(pathway_key, by = "KEGG_Pathway") %>%
+ #filter(top %in% SelCats) %>%
+  ggplot(mapping = aes(x = pathway, y = relab, fill = fct_relevel(taxa_group, "Other", after = Inf))) +
+  geom_col() +
+  theme_minimal() +
+  xlab("KEGG Pathway") +
+  ylab("Relative abundance") +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold")) +
+  coord_flip() +
+  facet_grid(~ type) +
+  guides(fill=guide_legend(ncol=2, title.position = "top")) +
+  scale_fill_manual('Taxonomic group', values = GEOM_COL_COLOURS) +
+  scale_y_continuous(labels=c(0,0.25,0.50,0.75,1))
+```
+
+
+### KEGG-categories higher levels
+```{r}
+
+topPath2levels <- bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+  mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                          orf %in% downReg ~ "C-DE",
+                          TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+   filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = gsub('[a-z]*','', KEGG_Pathway)) %>% #Removing prefixes
+  separate_rows(KEGG_Pathway, sep = ',') %>% #Dealing with multiple category assignments
+  distinct(KEGG_Pathway, orf, type, tpm, treatment) %>%
+  inner_join(orf_KEGG2_key,  by = "orf") %>%
+  group_by(type, KEGG_level_2) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  #filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_level_2 = forcats::as_factor(KEGG_level_2) %>% fct_reorder(tpm, .desc = FALSE)) %>%
+ group_by(type) %>%
+  arrange(desc(tpm)) %>%
+  slice(1:10) %>%
+  ungroup()
+
+bbmap_p %>%
+  inner_join(sample_ID %>% filter(day == "17"), by = "sample") %>% # Selecting relevant day
+  filter(treatment %in% c("TN","C")) %>% # Selecting relevant treatments
+  group_by(orf, treatment) %>%
+  summarise(tpm = mean(tpm)) %>% # summarising mean tpm per treatment
+  ungroup() %>%
+ # mutate(type = case_when(orf %in% upReg ~ "TN-DE", #Mutating in up/downregulation information
+                        #  orf %in% downReg ~ "C-DE",
+                       #   TRUE ~ "non-DE")) %>%
+  inner_join(eggnogs, by = "orf") %>%
+  filter(KEGG_Pathway != "-") %>%
+  mutate(KEGG_Pathway = gsub('[a-z]*','', KEGG_Pathway)) %>% #Removing prefixes
+  separate_rows(KEGG_Pathway, sep = ',') %>% #Dealing with multiple category assignments
+  distinct(treatment, KEGG_Pathway, orf, type, tpm) %>% #Removing duplicates due to prefixes
+  inner_join(bbmap_p %>% distinct(orf, chr), by = "orf") %>% #Getting contig for taxonomy annotation
+  inner_join(taxonomy %>% filter(superkingdom %in% c("Bacteria", "Archaea")), by = "chr") %>%
+ mutate(class = na_if(class, "no support"),
+         phylum = na_if(phylum, "no support")) %>% #Replacing the no support wth NA
+  mutate(taxa_group = coalesce(class, phylum, superkingdom))  %>%
+  mutate(taxa_group = ifelse(taxa_group %in% top10Tax, paste0(taxa_group), paste0("Other"))) %>%
+  mutate(taxa_group = case_when(taxa_group == superkingdom ~ paste0("d_",taxa_group),
+                                 taxa_group == phylum ~ paste0("p_",taxa_group),
+                                 taxa_group == class ~ paste0("c_", taxa_group),
+                                 TRUE ~ paste0(taxa_group)))  %>%
+inner_join(orf_KEGG2_key,  by = "orf") %>%
+  group_by(type, KEGG_level_2, taxa_group) %>%
+  summarise(tpm = sum(tpm)) %>%
+  ungroup() %>%
+  group_by(type, KEGG_level_2) %>%
+  mutate(relab = tpm/sum(tpm)) %>%
+  ungroup() %>%
+  #filter(full_name %in% SelCats) %>%
+  #mutate(KEGG_Pathway = factor(KEGG_Pathway, levels = levelVec)) %>%
+  group_by(type, KEGG_level_2) %>%
+  mutate(relab = tpm/sum(tpm)) %>%
+  ungroup() %>%
+  filter(KEGG_level_2 != "Global_and_overview_maps") %>%
+ # filter(KEGG_Pathway %in% unique(topPathlevels$KEGG_Pathway)) %>%
+  #left_join(pathway_key, by = "KEGG_Pathway") %>%
+ #filter(top %in% SelCats) %>%
+  ggplot(mapping = aes(x = KEGG_level_2, y = relab, fill = fct_relevel(taxa_group, "Other", after = Inf))) +
+  geom_col() +
+  theme_minimal() +
+  xlab("KEGG Pathway") +
+  ylab("Relative abundance") +
+  theme(legend.position = "bottom", axis.text = element_text(size = 7),
+        legend.title = element_text(face = "bold")) +
+  coord_flip() +
+  facet_grid(~ type) +
+  guides(fill=guide_legend(ncol=2, title.position = "top")) +
+  scale_fill_manual('Taxonomic group', values = GEOM_COL_COLOURS) +
+  scale_y_continuous(labels=c(0,0.25,0.50,0.75,1))
 ```
 
